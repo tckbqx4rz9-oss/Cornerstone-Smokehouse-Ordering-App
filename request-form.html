@@ -453,6 +453,19 @@ function buildPlannerLink(name, email, phone){
   return base + 'index.html?' + params.toString();
 }
 
+async function shortenLink(longUrl){
+  try{
+    const res = await fetch('https://is.gd/create.php?format=simple&url=' + encodeURIComponent(longUrl));
+    if(!res.ok) throw new Error('shorten failed');
+    const short = (await res.text()).trim();
+    if(!short.startsWith('http')) throw new Error('unexpected response');
+    return short;
+  } catch(err){
+    console.error('Link shortening failed, using full link instead:', err);
+    return longUrl;
+  }
+}
+
 async function submitRequest(){
   const name = document.getElementById('reqName').value.trim();
   const email = document.getElementById('reqEmail').value.trim();
@@ -466,7 +479,8 @@ async function submitRequest(){
   const btn = document.getElementById('submitRequestBtn');
   btn.disabled = true; btn.textContent = 'Sending…';
 
-  const plannerLink = buildPlannerLink(name, email, phone);
+  const longLink = buildPlannerLink(name, email, phone);
+  const plannerLink = await shortenLink(longLink);
   const orderSummary = lastQuote.lineItems.map(li=>`${li.name}${li.amt?' — '+li.amt:''}: ${money(li.cost)}`).join('\n');
   const body = new FormData();
   body.append('planner_link', plannerLink);

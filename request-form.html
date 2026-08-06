@@ -80,6 +80,7 @@
 
   footer{text-align:center;font-family:'IBM Plex Mono', monospace;font-size:10.5px;letter-spacing:1px;color:var(--smoke);padding:30px 20px 0;text-transform:uppercase;}
 </style>
+<script type="text/javascript" src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -205,7 +206,10 @@ const SERVICE_FEES = {
 };
 let serviceMethod = 'pickup';
 
-const FORMSPREE_ENDPOINT = 'https://formspree.io/f/xgoggdkb';
+const EMAILJS_SERVICE_ID = 'service_nr5vauh';
+const EMAILJS_TEMPLATE_ID = '0qyyivh';
+const EMAILJS_PUBLIC_KEY = 'j1Vg3egbnHiHEmFJt';
+emailjs.init({publicKey: EMAILJS_PUBLIC_KEY});
 
 function setMethod(method){
   serviceMethod = method;
@@ -453,18 +457,6 @@ function buildPlannerLink(name, email, phone){
   return base + 'index.html?' + params.toString();
 }
 
-async function shortenLink(longUrl){
-  try{
-    const res = await fetch('https://is.gd/create.php?format=simple&url=' + encodeURIComponent(longUrl));
-    if(!res.ok) throw new Error('shorten failed');
-    const short = (await res.text()).trim();
-    if(!short.startsWith('http')) throw new Error('unexpected response');
-    return short;
-  } catch(err){
-    console.error('Link shortening failed, using full link instead:', err);
-    return longUrl;
-  }
-}
 
 async function submitRequest(){
   const name = document.getElementById('reqName').value.trim();
@@ -479,32 +471,29 @@ async function submitRequest(){
   const btn = document.getElementById('submitRequestBtn');
   btn.disabled = true; btn.textContent = 'Sending…';
 
-  const longLink = buildPlannerLink(name, email, phone);
-  const plannerLink = await shortenLink(longLink);
+  const plannerLink = buildPlannerLink(name, email, phone);
   const orderSummary = lastQuote.lineItems.map(li=>`${li.name}${li.amt?' — '+li.amt:''}: ${money(li.cost)}`).join('\n');
-  const body = new FormData();
-  body.append('planner_link', plannerLink);
-  body.append('name', name);
-  body.append('email', email);
-  body.append('phone', phone);
-  body.append('event_name', lastQuote.eventName);
-  body.append('event_date', lastQuote.eventDate);
-  body.append('serve_time', lastQuote.serveTime);
-  body.append('guest_count', lastQuote.guests);
-  body.append('service_method', SERVICE_FEES[lastQuote.serviceMethod].label);
-  body.append('address', lastQuote.address);
-  body.append('order_summary', orderSummary);
-  body.append('estimated_total', money(lastQuote.total));
+  const templateParams = {
+    planner_link: plannerLink,
+    name: name,
+    email: email,
+    phone: phone,
+    event_name: lastQuote.eventName,
+    event_date: lastQuote.eventDate,
+    serve_time: lastQuote.serveTime,
+    guest_count: lastQuote.guests,
+    service_method: SERVICE_FEES[lastQuote.serviceMethod].label,
+    address: lastQuote.address,
+    order_summary: orderSummary,
+    estimated_total: money(lastQuote.total)
+  };
 
   try{
-    const res = await fetch(FORMSPREE_ENDPOINT, {method:'POST', body, headers:{'Accept':'application/json'}});
-    if(res.ok){
-      msg.className = 'success';
-      msg.textContent = "Thanks! We've got your request and estimate — we'll be in touch soon.";
-    } else {
-      throw new Error('failed');
-    }
+    await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, templateParams);
+    msg.className = 'success';
+    msg.textContent = "Thanks! We've got your request and estimate — we'll be in touch soon.";
   } catch(err){
+    console.error('EmailJS send failed:', err);
     msg.className = 'error';
     msg.textContent = 'Something went wrong sending your request — please try again.';
   } finally {

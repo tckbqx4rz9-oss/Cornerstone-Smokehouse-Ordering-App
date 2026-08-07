@@ -1,0 +1,25 @@
+{
+  "name": "Cornerstone Smokehouse — Instant Quote",
+  "short_name": "Cornerstone BBQ",
+  "description": "Get an instant catering quote from Cornerstone Smokehouse — pick your guest count and menu, see your price right away.",
+  "start_url": "./request-form.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F5F5F0",
+  "theme_color": "#3B2F2F",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

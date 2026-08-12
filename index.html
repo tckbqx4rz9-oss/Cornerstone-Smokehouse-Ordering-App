@@ -6,6 +6,8 @@
 <title>Cornerstone Smokehouse — Catering Planner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@500;700;900&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- Receipt Scanner OCR (planner-only feature — runs entirely in-browser, no account/key/cost) -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
   :root{
     --char:#3B2F2F;
@@ -445,6 +447,30 @@
     <button class="primary" onclick="runCalc()">Build The Ticket</button>
   </div>
 
+  <!-- RECEIPT SCANNER (internal only — never appears on request-form.html) -->
+  <div class="ticket no-print" id="receiptScannerTicket">
+    <div class="ticket-head">
+      <div><h2>Receipt Scanner</h2><div class="ticket-sub">Internal only — snap a receipt to update ingredient prices and log it for Quicken. Runs entirely on this device; nothing is uploaded anywhere.</div></div>
+    </div>
+    <div class="ticket-body">
+      <div class="field">
+        <label for="receiptPhotoInput">Photo of receipt</label>
+        <input type="file" id="receiptPhotoInput" accept="image/*" capture="environment" onchange="handleReceiptPhoto(event)">
+      </div>
+      <div id="receiptScanStatus" class="note" style="display:none;margin-top:10px;"></div>
+      <div id="receiptReviewArea" style="display:none;margin-top:16px;"></div>
+
+      <div class="group-label" style="margin-top:26px;">Tracked Business Supplies</div>
+      <div class="group-note">Non-food purchases (propane, gloves, pans, equipment...) — track their price over time the same way ingredients are tracked, without them feeding Food Cost Analysis. Built from receipts as you scan them; nothing seeded here to start.</div>
+      <div id="supplyBookBody"><div class="note">No business supplies tracked yet.</div></div>
+
+      <div class="group-label" style="margin-top:26px;">Logged Receipts</div>
+      <div class="group-note">Saved on this device only — export below when you're ready to bring them into Quicken.</div>
+      <div id="receiptLogBody"><div class="note">No receipts logged yet.</div></div>
+      <button class="secondary" style="margin-top:14px;" onclick="exportQuickenCSV()">Export All Logged Receipts for Quicken (CSV)</button>
+    </div>
+  </div>
+
   <!-- RESULTS -->
   <div id="results">
     <div class="perf" style="margin-top:26px;"></div>
@@ -496,6 +522,14 @@
       <div class="ticket-body" id="invoiceBody"></div>
     </div>
 
+    <div class="ticket no-print" id="foodCostTicket" style="display:none;">
+      <div class="ticket-head">
+        <div><h2>Food Cost Analysis</h2><div class="ticket-sub">Internal only — true ingredient cost vs. what you charge, for made-from-scratch items</div></div>
+        <span class="num">15</span>
+      </div>
+      <div class="ticket-body" id="foodCostBody"></div>
+    </div>
+
     <div class="actions">
       <button class="secondary" onclick="downloadICS()">Add Timeline To Apple Calendar (with alerts)</button>
       <button class="secondary" onclick="printInvoice()">Print / Save Invoice as PDF</button>
@@ -527,15 +561,16 @@ const RIBS = [
 ];
 const SIDES = [
   {key:'beans',       name:'Baked Beans',                 price:37.99, servesPerPan:22},
-  {key:'coleslaw',    name:'Creamy Coleslaw',              price:29.99, servesPerPan:22},
-  {key:'potatosalad', name:'Potato Salad',                 price:44.99, servesPerPan:22},
+  {key:'coleslaw',    name:'Creamy Coleslaw',              price:45.99, servesPerPan:22},
+  {key:'potatosalad', name:'Potato Salad',                 price:45.99, servesPerPan:22},
   {key:'mac',         name:'Mac &amp; Cheese',             price:44.99, servesPerPan:22},
-  {key:'smashed',     name:'Crispy Smashed Potatoes',       price:44.99, servesPerPan:10}
+  {key:'smashed',     name:'Crispy Smashed Potatoes',       price:44.99, servesPerPan:10},
+  {key:'caesar',      name:'Caesar Salad',                  price:47.99, servesPerPan:22}
 ];
 const BAKED_POTATO = {key:'bakedpotato', name:'Baked Potatoes (plain)', packPrice:20, packSize:6, ratePerPerson:1};
 const CORNBREAD = {key:'cornbread', name:'Cornbread', price:9.99, servesPerPan:9};
 const BREAD = [
-  {key:'rolls', name:'Dinner Rolls', packPrice:11.99, packSize:12, perPerson:1.25}
+  {key:'rolls', name:'Dinner Rolls', packPrice:11.99, packSize:12, bagSize:24, perPerson:1.25}
 ];
 // Standard markup applied to raw cost to get client-facing price, if/when enabled.
 // Set to 1 (no markup) for now — change back to e.g. 1.35 for a 35% markup.
@@ -564,6 +599,63 @@ function setServiceMethod(method){
 }
 
 // Real recipe, scaled per 5 lb batch (serves ~10): boil, dry, roast.
+/* ---------- price book: one shared source of truth for every purchased ingredient ---------- */
+/* Receipt Scanner (planner-only, see below) writes updates here — every recipe reads live from
+   this object via priceBookRate(), so a scanned price change propagates everywhere that ingredient
+   is used. size/unit describe the as-purchased package; ozPerCup is only set for ingredients priced
+   by weight but used by volume in a recipe (a density estimate — see individual notes below). */
+const PRICE_BOOK = {
+  potatoes:        { label:"Potatoes (Private Selection Petite Gold Gourmet)", price:3.99, size:1.5, unit:'lb' },
+  tableSalt:        { label:"Morton's Table Salt (stand-in for kosher salt)", price:1.86, size:26, unit:'oz', ozPerCup:10 },
+  neutralOil:       { label:"Neutral Oil (stand-in for olive oil in Smashed Potatoes)", price:6.99, size:17, unit:'floz' },
+  garlicPowder:     { label:"Garlic Powder (Monarch)", price:61.29, size:102, unit:'oz', ozPerCup:5.7 },
+  paprika:          { label:"Paprika", price:4.99, size:1.75, unit:'oz', ozPerCup:3.9 }, // density estimate, matches the cayenne density below — verify against your own measured tsp weight if precision matters
+  pepperCoarse:     { label:"Black Pepper, Coarse Ground (Monarch)", price:85.09, size:85, unit:'oz', ozPerCup:3.984 },
+  parmesan:         { label:"Grated Parmesan", price:5.79, size:8, unit:'oz', ozPerCup:3 }, // verify against your actual container
+  beansCan:         { label:"Bush's Baked Beans (55oz can)", price:6.19, size:1, unit:'can' },
+  baconBits:        { label:"Kroger Real Bacon Bits (loyalty price)", price:2.19, size:3, unit:'oz' },
+  coleslawBox:      { label:"Reser's Coleslaw Regular", price:15.99, size:7, unit:'lb' },
+  potatoSaladBox:   { label:"Reser's Potato Salad", price:16.09, size:8, unit:'lb' },
+  aluminumPan:      { label:"Great Value 13x9 Aluminum Pan w/ Lid", price:3.48, size:2, unit:'ct' }, // used for meat pans, side pans, and PAN_COST below
+  macaroni:         { label:"Harvest Value Elbow Macaroni", price:7.59, size:160, unit:'oz' },
+  eggs:             { label:"Great Value Large Eggs", price:2.17, size:18, unit:'ct' },
+  evapMilk:         { label:"Carnation Evaporated Milk", price:2.19, size:12, unit:'oz' },
+  butter:           { label:"Great Value Salted Butter", price:5.96, size:2, unit:'cup' }, // 16oz = 4 sticks = 2 cups
+  cheddarSoup:      { label:"Campbell's Condensed Cheddar Cheese Soup", price:1.96, size:1, unit:'can' },
+  seasonedSalt:     { label:"Johnny's Seasoning Salt", price:29.79, size:80, unit:'oz', ozPerCup:6 },
+  velveeta:         { label:"Velveeta Original", price:5.86, size:16, unit:'oz' },
+  cheddarShredded:  { label:"Great Value Shredded Medium Cheddar", price:3.48, size:4, unit:'cup' }, // 16oz bag = 4 cups, printed on package
+  cornbreadMix:     { label:"Krusteaz Professional Southern Style Cornbread Mix", price:10.19, size:5, unit:'lb' },
+  buttermilk:       { label:"Kroger Cultured 1.5% Reduced Fat Buttermilk (quart)", price:2.69, size:4, unit:'cup' }, // 32floz qt = 4 cups; cheaper per-oz than the $1.59/16floz pint
+  honeyPowder:      { label:"Unpretentious Honey Powder", price:24.49, size:44.8, unit:'oz', ozPerCup:6.768 }, // 2.8lb jar via Amazon/Axio Supply; density from the generic honey-powder label serving of 1 tsp=4g since this SKU doesn't list its own — verify against your jar if precision matters
+  creamedCorn:      { label:"Great Value Cream Style Sweet Corn", price:0.82, size:14.75, unit:'floz' }, // can's weight-oz treated as fl oz, consistent with how this was originally priced
+  rollsBag:         { label:"Rhodes Bake-N-Serv Texas Rolls (48oz bag / 24 rolls)", price:5.12, size:1, unit:'bag' },
+  thyme:            { label:"McCormick Ground Thyme", price:19.09, size:11, unit:'oz', ozPerCup:4.8 },
+  rosemary:         { label:"McCormick Ground Rosemary", price:27.89, size:11, unit:'oz', ozPerCup:4.8 },
+  chiliPowder:      { label:"Chili Powder (Monarch)", price:48.69, size:94, unit:'oz', ozPerCup:3.7 },
+  cumin:            { label:"Cumin (Monarch)", price:49.39, size:88, unit:'oz', ozPerCup:4.1 },
+  onionPowder:      { label:"Onion Powder (Monarch)", price:11.89, size:22, unit:'oz', ozPerCup:5.4 },
+  cayenne:          { label:"Cayenne (McCormick)", price:13.09, size:14, unit:'oz', ozPerCup:3.9 },
+  cavenders:        { label:"Cavender's Greek Seasoning", price:0.55, size:1, unit:'oz', ozPerCup:6 }, // $0.55/oz confirmed; density is a seasoned-salt-blend estimate — verify against your own measured cup weight
+  knorrContainer:   { label:"Knorr Chicken Base (16oz container)", price:13.5, size:1, unit:'container' },
+  appleJuice:       { label:"Great Value Frozen Apple Juice Concentrate (12floz can)", price:1.86, size:1, unit:'can' },
+  iceBag:           { label:"Reddy Ice (5-10lb small bag)", price:2.33, size:1, unit:'bag' },
+  fryingOil:        { label:"Harvest Value Clear Vegetable Frying Oil (35lb jug)", price:41.79, size:1, unit:'jug' },
+  woodChips:        { label:"Western Premium BBQ Mesquite Smoking Chips (180 cu in bag)", price:4.86, size:1, unit:'bag' }
+};
+
+const CUP = { tsp:48, tbsp:16, floz:8, cup:1 }; // units of X per 1 cup — used to convert between volume units
+function priceBookRate(id, targetUnit){
+  const p = PRICE_BOOK[id];
+  if(!p) return null;
+  const perOwnUnit = p.price / p.size; // $ per 1 unit of p.unit
+  if(!targetUnit || targetUnit === p.unit) return perOwnUnit;
+  const unitsPerCup = p.ozPerCup || CUP[p.unit]; // ingredient density (weight->volume) or a fixed volume conversion
+  if(unitsPerCup && CUP[targetUnit]) return (perOwnUnit * unitsPerCup) / CUP[targetUnit];
+  return perOwnUnit; // same-unit fallback for non-volume units (ct, lb, can, box, bag, jug...)
+}
+function panCost(){ return priceBookRate('aluminumPan'); } // Great Value 13x9 aluminum pan w/ lid — used for both meat (full) and side (half) pans; a function (not a const) so it stays live after a receipt-scanned price update
+
 const SMASHED_RECIPE = {
   batchServes: 10,
   potatoesLb: 5,
@@ -573,12 +665,171 @@ const SMASHED_RECIPE = {
   paprikaTsp: 2.5,
   seasonSaltTsp: 2.5,
   pepperTsp: 1.25,
-  parsleyCup: 1/3,
   parmesanCup: 2/3,
   prepMin: 15,
   cookMin: 45,
-  sheetPansPerBatch: 2
+  sheetPansPerBatch: 2,
+  costs: { // $ per unit shown above — null means not yet priced
+    potatoesLb: () => priceBookRate('potatoes'),
+    boilSaltTbsp: () => priceBookRate('tableSalt','tbsp'), // table salt density used as a stand-in for kosher salt
+    oilCup: () => priceBookRate('neutralOil','cup'), // used as a stand-in for olive oil
+    garlicPowderTsp: () => priceBookRate('garlicPowder','tsp'),
+    paprikaTsp: () => priceBookRate('paprika','tsp'),
+    seasonSaltTsp: () => priceBookRate('tableSalt','tsp'), // plain kosher salt per the shopping list label ("Kosher salt (for seasoning)"), not a seasoning blend
+    pepperTsp: () => priceBookRate('pepperCoarse','tsp'),
+    parmesanCup: () => priceBookRate('parmesan','cup')
+  }
 };
+const BEANS_RECIPE = {
+  batchServes: 22, // one pan/batch matches Baked Beans' existing 22-serving pan size
+  cansPerBatch: 1, // 55 oz can of Bush's Baked Beans
+  pepperTbspPerBatch: 1, // coarse ground black pepper
+  baconOzPerBatch: 12, // real bacon bits
+  prepMin: 5, // open cans, stir together
+  cookMin: 30, // heat through
+  costs: {
+    cansPerBatch: () => priceBookRate('beansCan'),
+    pepperTbspPerBatch: () => priceBookRate('pepperCoarse','tbsp'),
+    baconOzPerBatch: () => priceBookRate('baconBits')
+  }
+};
+const COLESLAW_RECIPE = {
+  batchServes: 22, // one pan/batch matches Creamy Coleslaw's existing 22-serving pan size
+  boxLbPerBatch: 7, // Reser's Coleslaw Regular, 7 lb box
+  pansPerBatch: 1, // the 13x9 aluminum pan it gets decanted into
+  prepMin: 5, // open box, dump into pan, cover with foil — no cooking, keep chilled until service
+  costs: { boxLbPerBatch: () => priceBookRate('coleslawBox'), pansPerBatch: () => priceBookRate('aluminumPan') }
+};
+const POTATO_SALAD_RECIPE = {
+  batchServes: 22, // one pan/batch matches Potato Salad's existing 22-serving pan size
+  boxLbPerBatch: 8, // Reser's Potato Salad, 8 lb box
+  pansPerBatch: 1, // the 13x9 aluminum pan it gets decanted into
+  prepMin: 5, // open box, dump into pan, cover with foil — no cooking, keep chilled until service
+  costs: { boxLbPerBatch: () => priceBookRate('potatoSaladBox'), pansPerBatch: () => priceBookRate('aluminumPan') }
+};
+const MAC_RECIPE = {
+  batchServes: 22, // one pan/batch matches Mac & Cheese's existing 22-serving pan size
+  macaroniOzPerBatch: 16, // large macaroni, 16 oz package
+  eggsPerBatch: 3,
+  evapMilkOzPerBatch: 12, // canned evaporated milk
+  butterCupPerBatch: 0.25, // 1/4 cup melted butter (1/2 stick)
+  soupCansPerBatch: 1, // cream of cheddar cheese soup
+  seasonedSaltTspPerBatch: 1.5,
+  pepperTspPerBatch: 1,
+  velveetaOzPerBatch: 16, // diced small
+  cheddarCupPerBatch: 2, // shredded medium cheddar (Tillamook)
+  prepMin: 20, // cook macaroni, mix filling, assemble pan
+  cookMin: 45, // bake at 350°F to 165° internal
+  costs: {
+    macaroniOzPerBatch: () => priceBookRate('macaroni'),
+    eggsPerBatch: () => priceBookRate('eggs'),
+    evapMilkOzPerBatch: () => priceBookRate('evapMilk'),
+    butterCupPerBatch: () => priceBookRate('butter','cup'),
+    soupCansPerBatch: () => priceBookRate('cheddarSoup'),
+    seasonedSaltTspPerBatch: () => priceBookRate('seasonedSalt','tsp'),
+    pepperTspPerBatch: () => priceBookRate('pepperCoarse','tsp'),
+    velveetaOzPerBatch: () => priceBookRate('velveeta'),
+    cheddarCupPerBatch: () => priceBookRate('cheddarShredded','cup')
+  }
+};
+const CORNBREAD_RECIPE = {
+  batchServes: 9, // 1 lb of Krusteaz mix = one pan, matches Cornbread's existing 9-serving pan size
+  mixLbPerBatch: 1, // Krusteaz Professional Southern Style Cornbread Mix
+  buttermilkCupPerBatch: 1.25,
+  eggsPerBatch: 2,
+  butterTbspPerBatch: 3,
+  oilTbspPerBatch: 3,
+  honeyPowderTbspPerBatch: 3,
+  creamedCornCupPerBatch: 0.75, // direct swap for the corn kernels originally in the recipe
+  prepMin: 10, // whisk wet, stir in dry, fold in corn, pour
+  cookMin: 25, // bake to 190°F internal — cookie sheet runs ~18-22 min, 9x13 runs ~22-28 min
+  costs: {
+    mixLbPerBatch: () => priceBookRate('cornbreadMix'),
+    buttermilkCupPerBatch: () => priceBookRate('buttermilk','cup'),
+    eggsPerBatch: () => priceBookRate('eggs'),
+    butterTbspPerBatch: () => priceBookRate('butter','tbsp'),
+    oilTbspPerBatch: () => priceBookRate('neutralOil','tbsp'),
+    honeyPowderTbspPerBatch: () => priceBookRate('honeyPowder','tbsp'),
+    creamedCornCupPerBatch: () => priceBookRate('creamedCorn','cup')
+  }
+};
+const ROLLS_RECIPE = {
+  batchServes: 24, // one bag (24 rolls) matches the recipe's real batch yield
+  bagsPerBatch: 1, // the Rhodes roll bag itself — 1 batch is defined as 1 bag
+  parmesanCupPerBatch: 1,
+  garlicPowderTbspPerBatch: 2,
+  butterCupPerBatch: 1, // 2 cubes, not margarine
+  thymeTspPerBatch: 2,
+  rosemaryTspPerBatch: 3,
+  overnightMin: 5, // Day 1: place frozen rolls on sheet, cover, refrigerate
+  coatMin: 15, // Day 2: melt butter, mix in cheese/garlic, roll each roll in butter mixture
+  riseMin: 120, // let rise ~2 hr or until doubled
+  bakeMin: 15, // bake at 375°F — recipe says 13 min but notes it can run past 20
+  costs: {
+    bagsPerBatch: () => priceBookRate('rollsBag'),
+    parmesanCupPerBatch: () => priceBookRate('parmesan','cup'),
+    garlicPowderTbspPerBatch: () => priceBookRate('garlicPowder','tbsp'),
+    butterCupPerBatch: () => priceBookRate('butter','cup'),
+    thymeTspPerBatch: () => priceBookRate('thyme','tsp'),
+    rosemaryTspPerBatch: () => priceBookRate('rosemary','tsp')
+  }
+};
+const RUB_RECIPE = {
+  // "×16" batch — this full recipe fits one 5 lb jug
+  chiliPowderCups: 8,
+  cuminCups: 4,
+  garlicPowderCups: 2,
+  onionPowderCups: 2,
+  cayenneCups: 0.25,
+  tbspPerLbMeat: 2, // usage rate: 2 tbsp of rub per lb of meat rubbed
+  costs: {
+    // Prices confirmed from US Foods Chef'Store (Monarch brand), converted oz->cup using standard spice
+    // density references since these are sold by weight — verify against your own measured cup weight if precision matters.
+    chiliPowderCups: () => priceBookRate('chiliPowder','cup'),
+    cuminCups: () => priceBookRate('cumin','cup'),
+    garlicPowderCups: () => priceBookRate('garlicPowder','cup'),
+    onionPowderCups: () => priceBookRate('onionPowder','cup'),
+    cayenneCups: () => priceBookRate('cayenne','cup')
+  }
+};
+const TURKEY_SEASONING_RECIPE = {
+  cavendersCupPerBird: 1/3, // Cavender's Greek Seasoning, rubbed on
+  brothQuartsPerBird: 4, // prepared chicken broth injected per bird
+  waterQuartsPerContainer: 8, // your actual mix ratio: 1 full 16oz Knorr container + 8 qt water = 8 qt prepared broth
+  containersPerBird: 4/8, // derived: brothQuartsPerBird / waterQuartsPerContainer
+  saltCupPerBird: 2, // Morton's salt, for the brine
+  appleJuiceCansPerBird: 3, // concentrated apple juice, for the brine
+  iceBagsPerBird: 1, // for the brine
+  costs: {
+    cavendersCupPerBird: () => priceBookRate('cavenders','cup'),
+    containersPerBird: () => priceBookRate('knorrContainer'),
+    saltCupPerBird: () => priceBookRate('tableSalt','cup'),
+    appleJuiceCansPerBird: () => priceBookRate('appleJuice'),
+    iceBagsPerBird: () => priceBookRate('iceBag')
+  }
+};
+const TURKEY_OIL_RECIPE = {
+  usesPerJug: 8 // reused ~8 times before replacing
+};
+const WOOD_CHIPS_RECIPE = {
+  baseBagFraction: 0.5, // used per event regardless of how much of ONE meat type is smoked
+  extraBagFractionPerAdditionalMeat: 0.125 // rough estimate for "a little bit" more per additional distinct smoked meat type — verify with Brent
+};
+
+function computeRecipeCost(recipeConst, batches){
+  let cost = 0, known = 0, total = 0;
+  for(const key in recipeConst.costs){
+    total++;
+    const perBatchQty = recipeConst[key];
+    let costPerUnit = recipeConst.costs[key];
+    if(typeof costPerUnit === 'function') costPerUnit = costPerUnit(); // live PRICE_BOOK lookup
+    if(costPerUnit !== null && costPerUnit !== undefined){
+      known++;
+      cost += perBatchQty * costPerUnit * batches;
+    }
+  }
+  return {cost, known, total};
+}
 
 /* ---------- rate registry: one place to read/adjust each item's per-person rate ---------- */
 const RATE_REGISTRY = {};
@@ -791,6 +1042,10 @@ function doRunCalc(){
   let orderTotal = 0;
   let meatPans = 0;  // full pans needed to hold the ordered meat/turkey/ribs
   let sidePans = 0;  // half pans needed to hold the ordered sides/cornbread
+  let rubMeatLb = 0; // raw lb of by-the-pound meat + turkey, used to scale the BBQ rub batch (ribs not included — tracked by rack, not weight)
+  let turkeyBirdsTotal = 0; // total whole birds across all turkey styles, used to scale the turkey rub/injection/brine
+  let friedTurkeyBirdsTotal = 0; // birds that actually touch the fryer (smofried + deep fried), used to scale oil cost
+  let smokedMeatTypesCount = 0; // count of distinct meat/rib/turkey types that actually touch the smoker, used to scale wood chip usage
 
   // category-level serving capacity, used for the "not enough food" warnings below
   let meatCapacity = 0, meatChecked = false;
@@ -818,6 +1073,8 @@ function doRunCalc(){
     meatPans += Math.ceil(buyLbs / m.panLb);
     meatChecked = true;
     meatCapacity += finalCookedLbs / m.cookedLbPerPerson;
+    rubMeatLb += buyLbs;
+    smokedMeatTypesCount++;
     trackItems.push({key:m.key, ordered:buyLbs});
   });
 
@@ -853,6 +1110,10 @@ function doRunCalc(){
     meatPans += birds;
     meatChecked = true;
     meatCapacity += (birds*t.avgBirdLb*t.cookedYieldPct) / t.cookedLbPerPerson;
+    rubMeatLb += birds*t.avgBirdLb;
+    turkeyBirdsTotal += birds;
+    if(t.cookMethod!=='fryer') smokedMeatTypesCount++;
+    if(t.cookMethod==='fryer' || t.cookMethod==='smoker+fryer') friedTurkeyBirdsTotal += birds;
     trackItems.push({key:t.key, ordered:birds*t.avgBirdLb});
   });
 
@@ -874,6 +1135,7 @@ function doRunCalc(){
     meatPans += Math.ceil(racks / RACKS_PER_PAN);
     meatChecked = true;
     meatCapacity += racks / r.racksPerPerson;
+    smokedMeatTypesCount++;
     trackItems.push({key:r.key, ordered:racks});
   });
 
@@ -901,8 +1163,11 @@ function doRunCalc(){
     if(s.key==='smashed'){
       const batches = pans; // servesPerPan (10) matches the recipe's real batch yield
       const r = SMASHED_RECIPE;
+      const ci = computeRecipeCost(r, batches);
       recipeItems.push({
-        name: s.name, batches,
+        recipeType: 'smashed',
+        name: s.name, batches, sellPrice: cost,
+        ingredientCost: ci.cost, costsKnown: ci.known, costsTotal: ci.total,
         potatoesLb: r.potatoesLb*batches,
         boilSaltTbsp: r.boilSaltTbsp*batches,
         oilCup: r.oilCup*batches,
@@ -910,9 +1175,66 @@ function doRunCalc(){
         paprikaTsp: r.paprikaTsp*batches,
         seasonSaltTsp: r.seasonSaltTsp*batches,
         pepperTsp: r.pepperTsp*batches,
-        parsleyCup: r.parsleyCup*batches,
         parmesanCup: r.parmesanCup*batches,
         sheetPans: r.sheetPansPerBatch*batches,
+        prepMin: r.prepMin, cookMin: r.cookMin
+      });
+    }
+    if(s.key==='beans'){
+      const batches = pans; // servesPerPan (22) matches one can-of-beans batch
+      const r = BEANS_RECIPE;
+      const ci = computeRecipeCost(r, batches);
+      recipeItems.push({
+        recipeType: 'beans',
+        name: s.name, batches, sellPrice: cost,
+        ingredientCost: ci.cost, costsKnown: ci.known, costsTotal: ci.total,
+        cans: r.cansPerBatch*batches,
+        pepperTbsp: r.pepperTbspPerBatch*batches,
+        baconOz: r.baconOzPerBatch*batches,
+        prepMin: r.prepMin, cookMin: r.cookMin
+      });
+    }
+    if(s.key==='coleslaw'){
+      const batches = pans; // servesPerPan (22) matches one box-of-coleslaw batch
+      const r = COLESLAW_RECIPE;
+      const ci = computeRecipeCost(r, batches);
+      recipeItems.push({
+        recipeType: 'coleslaw',
+        name: s.name, batches, sellPrice: cost,
+        ingredientCost: ci.cost, costsKnown: ci.known, costsTotal: ci.total,
+        boxLb: r.boxLbPerBatch*batches,
+        prepMin: r.prepMin, cookMin: 0
+      });
+    }
+    if(s.key==='potatosalad'){
+      const batches = pans; // servesPerPan (22) matches one box-of-potato-salad batch
+      const r = POTATO_SALAD_RECIPE;
+      const ci = computeRecipeCost(r, batches);
+      recipeItems.push({
+        recipeType: 'potatosalad',
+        name: s.name, batches, sellPrice: cost,
+        ingredientCost: ci.cost, costsKnown: ci.known, costsTotal: ci.total,
+        boxLb: r.boxLbPerBatch*batches,
+        prepMin: r.prepMin, cookMin: 0
+      });
+    }
+    if(s.key==='mac'){
+      const batches = pans; // servesPerPan (22) matches one from-scratch recipe batch
+      const r = MAC_RECIPE;
+      const ci = computeRecipeCost(r, batches);
+      recipeItems.push({
+        recipeType: 'mac',
+        name: s.name, batches, sellPrice: cost,
+        ingredientCost: ci.cost, costsKnown: ci.known, costsTotal: ci.total,
+        macaroniOz: r.macaroniOzPerBatch*batches,
+        eggs: r.eggsPerBatch*batches,
+        evapMilkOz: r.evapMilkOzPerBatch*batches,
+        butterCup: r.butterCupPerBatch*batches,
+        soupCans: r.soupCansPerBatch*batches,
+        seasonedSaltTsp: r.seasonedSaltTspPerBatch*batches,
+        pepperTsp: r.pepperTspPerBatch*batches,
+        velveetaOz: r.velveetaOzPerBatch*batches,
+        cheddarCup: r.cheddarCupPerBatch*batches,
         prepMin: r.prepMin, cookMin: r.cookMin
       });
     }
@@ -939,7 +1261,7 @@ function doRunCalc(){
     trackItems.push({key:BAKED_POTATO.key, ordered:finalCount});
   }
 
-  // bread — cornbread (by the pan) and dinner rolls (by the dozen)
+  // bread — cornbread (by the pan) and dinner rolls (by the bag)
   if(document.getElementById('chk_cornbread').checked){
     const fieldVal = document.getElementById('rate_cornbread').value;
     let pans;
@@ -956,6 +1278,23 @@ function doRunCalc(){
     breadChecked = true;
     breadCapacity += pans*CORNBREAD.servesPerPan;
     trackItems.push({key:CORNBREAD.key, ordered:pans});
+
+    const cbBatches = pans; // servesPerPan (9) matches one 1lb-mix batch
+    const cbR = CORNBREAD_RECIPE;
+    const cbCi = computeRecipeCost(cbR, cbBatches);
+    recipeItems.push({
+      recipeType: 'cornbread',
+      name: CORNBREAD.name, batches: cbBatches, sellPrice: cost,
+      ingredientCost: cbCi.cost, costsKnown: cbCi.known, costsTotal: cbCi.total,
+      mixLb: cbR.mixLbPerBatch*cbBatches,
+      buttermilkCup: cbR.buttermilkCupPerBatch*cbBatches,
+      eggs: cbR.eggsPerBatch*cbBatches,
+      butterTbsp: cbR.butterTbspPerBatch*cbBatches,
+      oilTbsp: cbR.oilTbspPerBatch*cbBatches,
+      honeyPowderTbsp: cbR.honeyPowderTbspPerBatch*cbBatches,
+      creamedCornCup: cbR.creamedCornCupPerBatch*cbBatches,
+      prepMin: cbR.prepMin, cookMin: cbR.cookMin
+    });
   }
   BREAD.forEach(b=>{
     if(!document.getElementById('chk_'+b.key).checked) return;
@@ -976,6 +1315,28 @@ function doRunCalc(){
     breadChecked = true;
     breadCapacity += finalCount / (b.perPerson||1);
     trackItems.push({key:b.key, ordered:finalCount});
+
+    if(b.key==='rolls'){
+      const batches = finalCount / b.bagSize; // seasoning scales to actual roll count, not forced to whole-bag increments
+      const bagsToBuy = Math.ceil(finalCount / b.bagSize); // rolls themselves are purchased in whole 24-count bags
+      const r = ROLLS_RECIPE;
+      const ci = computeRecipeCost(r, batches);
+      recipeItems.push({
+        recipeType: 'rolls',
+        overnightPrep: true,
+        name: b.name, batches, bagsToBuy, sellPrice: cost,
+        ingredientCost: ci.cost, costsKnown: ci.known, costsTotal: ci.total,
+        parmesanCup: r.parmesanCupPerBatch*batches,
+        garlicPowderTbsp: r.garlicPowderTbspPerBatch*batches,
+        butterCup: r.butterCupPerBatch*batches,
+        thymeTsp: r.thymeTspPerBatch*batches,
+        rosemaryTsp: r.rosemaryTspPerBatch*batches,
+        overnightMin: r.overnightMin,
+        coatMin: r.coatMin, riseMin: r.riseMin, bakeMin: r.bakeMin,
+        prepMin: r.coatMin, // only the hands-on coating step blocks other same-day prep
+        cookMin: r.riseMin + r.bakeMin // rise + bake both run unattended, back-to-back
+      });
+    }
   });
 
   // service supplies — plates, utensils & napkins
@@ -1029,6 +1390,9 @@ function doRunCalc(){
     r.roastEnd = new Date(serveDT.getTime() - plateBuffer*60000);
     r.roastStart = new Date(r.roastEnd.getTime() - r.cookMin*60000);
     r.prepStart = new Date(r.roastStart.getTime() - r.prepMin*60000);
+    if(r.overnightPrep){
+      r.day1Start = new Date(r.prepStart.getTime() - 24*3600000);
+    }
   });
 
   // One cook has two hands: hands-on prep tasks (trimming, brining, rubbing, boiling/smashing)
@@ -1051,9 +1415,15 @@ function doRunCalc(){
       cursor = new Date(start.getTime() + t.durationMin*60000);
     });
   }
-  staggerOnly(cookItems.filter(c=>c.twoDayPrep).map(c=>({
+  const day1Tasks = cookItems.filter(c=>c.twoDayPrep).map(c=>({
     deadline: new Date(c.day1Start.getTime()+60*60000), durationMin:60, apply:start=>{ c.day1Start=start; }
-  })));
+  }));
+  recipeItems.filter(r=>r.overnightPrep).forEach(r=>{
+    day1Tasks.push({
+      deadline: new Date(r.day1Start.getTime()+r.overnightMin*60000), durationMin:r.overnightMin, apply:start=>{ r.day1Start=start; }
+    });
+  });
+  staggerOnly(day1Tasks);
 
   // Day 2 / same-day prep feeds directly into that item's cook step, so a delay here must
   // cascade forward into smokerStart/pullOff (or roastStart/roastEnd) to stay consistent.
@@ -1103,7 +1473,61 @@ function doRunCalc(){
     categoryWarnings.push(`Heads up — there isn't quite enough back-to-back time to hand-prep everything before it needs to go on. Consider an earlier serve time, less to prep same-day, or an extra set of hands.`);
   }
 
-  lastPlan = {guests, serveDT, plateBuffer, setupBuffer, jobsiteAddress, serviceMethod, deliveryFeeApplied:false, lineItems, cookItems, recipeItems, trackItems, shopLines, orderTotal, meatPans, sidePans, travel:null, categoryWarnings, invoiceNum:null, orderNum:nextOrderNumber()};
+  let rubInfo = null;
+  if(rubMeatLb > 0){
+    const r = RUB_RECIPE;
+    const totalTbspPerJug = (r.chiliPowderCups + r.cuminCups + r.garlicPowderCups + r.onionPowderCups + r.cayenneCups) * 16;
+    const lbsPerJug = totalTbspPerJug / r.tbspPerLbMeat;
+    const jugs = rubMeatLb / lbsPerJug;
+    const ci = computeRecipeCost(r, jugs);
+    rubInfo = {
+      meatLb: rubMeatLb, jugs,
+      ingredientCost: ci.cost, costsKnown: ci.known, costsTotal: ci.total,
+      chiliPowderCups: r.chiliPowderCups*jugs,
+      cuminCups: r.cuminCups*jugs,
+      garlicPowderCups: r.garlicPowderCups*jugs,
+      onionPowderCups: r.onionPowderCups*jugs,
+      cayenneCups: r.cayenneCups*jugs
+    };
+  }
+
+  let turkeySeasoningInfo = null;
+  if(turkeyBirdsTotal > 0){
+    const r = TURKEY_SEASONING_RECIPE;
+    const ci = computeRecipeCost(r, turkeyBirdsTotal);
+    turkeySeasoningInfo = {
+      birds: turkeyBirdsTotal,
+      ingredientCost: ci.cost, costsKnown: ci.known, costsTotal: ci.total,
+      cavendersCups: r.cavendersCupPerBird*turkeyBirdsTotal,
+      brothQuarts: r.brothQuartsPerBird*turkeyBirdsTotal,
+      containers: r.containersPerBird*turkeyBirdsTotal,
+      saltCups: r.saltCupPerBird*turkeyBirdsTotal,
+      appleJuiceCans: r.appleJuiceCansPerBird*turkeyBirdsTotal,
+      iceBags: r.iceBagsPerBird*turkeyBirdsTotal
+    };
+  }
+
+  let turkeyOilInfo = null;
+  if(friedTurkeyBirdsTotal > 0){
+    const r = TURKEY_OIL_RECIPE;
+    const jugs = friedTurkeyBirdsTotal / r.usesPerJug;
+    turkeyOilInfo = { birds: friedTurkeyBirdsTotal, jugs, cost: jugs*priceBookRate('fryingOil') };
+  }
+
+  let woodChipsInfo = null;
+  if(smokedMeatTypesCount > 0){
+    const r = WOOD_CHIPS_RECIPE;
+    // flat half-bag covers the whole smoker load regardless of how much of one meat; a little extra
+    // per additional distinct meat type sharing the smoker — the "little bit" fraction is an estimate, verify with Brent
+    const bags = r.baseBagFraction + Math.max(0, smokedMeatTypesCount-1)*r.extraBagFractionPerAdditionalMeat;
+    woodChipsInfo = {
+      typesCount: smokedMeatTypesCount, bags,
+      cost: bags*priceBookRate('woodChips'),
+      costKnown: true
+    };
+  }
+
+  lastPlan = {guests, serveDT, plateBuffer, setupBuffer, jobsiteAddress, serviceMethod, deliveryFeeApplied:false, lineItems, cookItems, recipeItems, trackItems, shopLines, orderTotal, meatPans, sidePans, travel:null, categoryWarnings, invoiceNum:null, orderNum:nextOrderNumber(), rubInfo, turkeySeasoningInfo, turkeyOilInfo, woodChipsInfo};
   renderResults(lastPlan);
   document.getElementById('results').style.display='block';
   document.getElementById('results').scrollIntoView({behavior:'smooth'});
@@ -1144,8 +1568,27 @@ function renderTimeline(plan){
     cookEvents.push({t:c.pullOff, label:`Pull ${c.name}, rest ${c.restMin} min`});
   });
   plan.recipeItems.forEach(r=>{
-    cookEvents.push({t:r.prepStart, label:`Boil, dry &amp; smash ${r.name} (${r.batches} batch${r.batches>1?'es':''})`});
-    cookEvents.push({t:r.roastStart, label:`Roast ${r.name} (${r.cookMin} min, ${r.sheetPans} sheet pan${r.sheetPans>1?'s':''})`});
+    if(r.recipeType==='coleslaw' || r.recipeType==='potatosalad'){
+      cookEvents.push({t:r.prepStart, label:`Open, pan &amp; cover ${r.name} (${r.batches} batch${r.batches>1?'es':''})`});
+    } else if(r.recipeType==='beans'){
+      cookEvents.push({t:r.prepStart, label:`Open &amp; stir together ${r.name} (${r.batches} batch${r.batches>1?'es':''})`});
+      cookEvents.push({t:r.roastStart, label:`Heat ${r.name} through (${r.cookMin} min)`});
+    } else if(r.recipeType==='mac'){
+      cookEvents.push({t:r.prepStart, label:`Cook macaroni &amp; mix ${r.name} (${r.batches} batch${r.batches>1?'es':''})`});
+      cookEvents.push({t:r.roastStart, label:`Bake ${r.name} at 350°F (${r.cookMin} min, 165° internal)`});
+    } else if(r.recipeType==='cornbread'){
+      cookEvents.push({t:r.prepStart, label:`Mix &amp; pour ${r.name} (${r.batches} batch${r.batches>1?'es':''})`});
+      cookEvents.push({t:r.roastStart, label:`Bake ${r.name} (${r.cookMin} min, 190° internal)`});
+    } else if(r.recipeType==='rolls'){
+      const bakeStart = new Date(r.roastStart.getTime() + r.riseMin*60000);
+      cookEvents.push({t:r.day1Start, label:`Place frozen ${r.name} on sheet, cover &amp; refrigerate overnight (${r.bagsToBuy} bag${r.bagsToBuy>1?'s':''})`});
+      cookEvents.push({t:r.prepStart, label:`Melt butter, mix in cheese &amp; garlic, coat ${r.name}`});
+      cookEvents.push({t:r.roastStart, label:`Let ${r.name} rise ~${Math.round(r.riseMin/60)} hr or until doubled`});
+      cookEvents.push({t:bakeStart, label:`Bake ${r.name} at 375°F (~${r.bakeMin} min, golden brown)`});
+    } else {
+      cookEvents.push({t:r.prepStart, label:`Boil, dry &amp; smash ${r.name} (${r.batches} batch${r.batches>1?'es':''})`});
+      cookEvents.push({t:r.roastStart, label:`Roast ${r.name} (${r.cookMin} min, ${r.sheetPans} sheet pan${r.sheetPans>1?'s':''})`});
+    }
   });
   if(plan.travel){
     cookEvents.push({t:plan.travel.leaveTime, label:`Leave Cornerstone for jobsite (${plan.travel.miles.toFixed(1)} mi, ~${plan.travel.driveMinutes} min)`});
@@ -1183,6 +1626,7 @@ function renderResults(plan){
   renderTimeline(plan);
   renderTracker(plan);
   renderInvoice(plan);
+  renderFoodCost(plan);
 
   // shopping / prep list
   let sh = '';
@@ -1200,19 +1644,89 @@ function renderResults(plan){
   }
   if(plan.recipeItems.length){
     plan.recipeItems.forEach(r=>{
-      sh += `<div class="shop-cat">${r.name} — Ingredients (${r.batches} batch${r.batches>1?'es':''})</div><ul class="shop-list">`;
-      sh += `<li><span>Baby potatoes</span><span>${r.potatoesLb} lb</span></li>`;
-      sh += `<li><span>Kosher salt (for boiling)</span><span>${r.boilSaltTbsp} tbsp</span></li>`;
-      sh += `<li><span>Olive oil or melted butter</span><span>${r.oilCup.toFixed(2)} cups</span></li>`;
-      sh += `<li><span>Garlic powder</span><span>${r.garlicPowderTsp} tsp</span></li>`;
-      sh += `<li><span>Smoked paprika</span><span>${r.paprikaTsp} tsp</span></li>`;
-      sh += `<li><span>Kosher salt (for seasoning)</span><span>${r.seasonSaltTsp} tsp</span></li>`;
-      sh += `<li><span>Black pepper</span><span>${r.pepperTsp} tsp</span></li>`;
-      sh += `<li><span>Fresh parsley or chives, chopped</span><span>${r.parsleyCup.toFixed(2)} cups</span></li>`;
-      sh += `<li><span>Grated parmesan (optional)</span><span>${r.parmesanCup.toFixed(2)} cups</span></li>`;
-      sh += `<li><span>Sheet pans needed</span><span>${r.sheetPans} ct</span></li>`;
+      const batchLabel = Number.isInteger(r.batches) ? r.batches : r.batches.toFixed(2);
+      sh += `<div class="shop-cat">${r.name} — Ingredients (${batchLabel} batch${r.batches>1?'es':''})</div><ul class="shop-list">`;
+      if(r.recipeType==='coleslaw'){
+        sh += `<li><span>Reser's Coleslaw Regular (7 lb box)</span><span>${Math.round(r.boxLb/7)} box${Math.round(r.boxLb/7)>1?'es':''}</span></li>`;
+        sh += `<li><span>Aluminum foil to cover</span><span>as needed</span></li>`;
+      } else if(r.recipeType==='potatosalad'){
+        sh += `<li><span>Reser's Potato Salad (8 lb box)</span><span>${Math.round(r.boxLb/8)} box${Math.round(r.boxLb/8)>1?'es':''}</span></li>`;
+        sh += `<li><span>Aluminum foil to cover</span><span>as needed</span></li>`;
+      } else if(r.recipeType==='beans'){
+        sh += `<li><span>Bush's Baked Beans (55 oz can)</span><span>${r.cans} can${r.cans>1?'s':''}</span></li>`;
+        sh += `<li><span>Black pepper, coarse ground</span><span>${r.pepperTbsp} tbsp</span></li>`;
+        sh += `<li><span>Real bacon bits</span><span>${r.baconOz} oz</span></li>`;
+      } else if(r.recipeType==='mac'){
+        sh += `<li><span>Large macaroni (16 oz package)</span><span>${Math.round(r.macaroniOz/16)} package${Math.round(r.macaroniOz/16)>1?'s':''}</span></li>`;
+        sh += `<li><span>Eggs</span><span>${r.eggs} ct</span></li>`;
+        sh += `<li><span>Evaporated milk (12 oz can)</span><span>${Math.round(r.evapMilkOz/12)} can${Math.round(r.evapMilkOz/12)>1?'s':''}</span></li>`;
+        sh += `<li><span>Butter, melted</span><span>${r.butterCup.toFixed(2)} cups</span></li>`;
+        sh += `<li><span>Cream of Cheddar Cheese Soup (can)</span><span>${r.soupCans} can${r.soupCans>1?'s':''}</span></li>`;
+        sh += `<li><span>Seasoned salt</span><span>${r.seasonedSaltTsp} tsp</span></li>`;
+        sh += `<li><span>Black pepper</span><span>${r.pepperTsp} tsp</span></li>`;
+        sh += `<li><span>Velveeta cheese, diced small</span><span>${r.velveetaOz} oz</span></li>`;
+        sh += `<li><span>Shredded medium cheddar (Tillamook)</span><span>${r.cheddarCup} cups</span></li>`;
+      } else if(r.recipeType==='cornbread'){
+        sh += `<li><span>Krusteaz Professional Southern Style Cornbread Mix</span><span>${r.mixLb.toFixed(1)} lb</span></li>`;
+        sh += `<li><span>Buttermilk</span><span>${r.buttermilkCup.toFixed(2)} cups</span></li>`;
+        sh += `<li><span>Eggs</span><span>${Math.round(r.eggs)} ct</span></li>`;
+        sh += `<li><span>Butter, melted</span><span>${r.butterTbsp.toFixed(2)} tbsp</span></li>`;
+        sh += `<li><span>Neutral oil</span><span>${r.oilTbsp.toFixed(2)} tbsp</span></li>`;
+        sh += `<li><span>Honey powder</span><span>${r.honeyPowderTbsp.toFixed(2)} tbsp</span></li>`;
+        sh += `<li><span>Cream style corn</span><span>${r.creamedCornCup.toFixed(2)} cups</span></li>`;
+      } else if(r.recipeType==='rolls'){
+        sh += `<li><span>Rhodes Texas rolls — buy</span><span>${r.bagsToBuy} bag${r.bagsToBuy>1?'s':''} of 24</span></li>`;
+        sh += `<li><span>Grated parmesan cheese</span><span>${r.parmesanCup.toFixed(2)} cups</span></li>`;
+        sh += `<li><span>Garlic powder</span><span>${r.garlicPowderTbsp.toFixed(2)} tbsp</span></li>`;
+        sh += `<li><span>Butter (not margarine)</span><span>${r.butterCup.toFixed(2)} cups (${(r.butterCup*2).toFixed(1)} cubes)</span></li>`;
+        sh += `<li><span>Thyme</span><span>${r.thymeTsp.toFixed(2)} tsp</span></li>`;
+        sh += `<li><span>Rosemary</span><span>${r.rosemaryTsp.toFixed(2)} tsp</span></li>`;
+      } else {
+        sh += `<li><span>Baby potatoes</span><span>${r.potatoesLb} lb</span></li>`;
+        sh += `<li><span>Kosher salt (for boiling)</span><span>${r.boilSaltTbsp} tbsp</span></li>`;
+        sh += `<li><span>Olive oil or melted butter</span><span>${r.oilCup.toFixed(2)} cups</span></li>`;
+        sh += `<li><span>Garlic powder</span><span>${r.garlicPowderTsp} tsp</span></li>`;
+        sh += `<li><span>Smoked paprika</span><span>${r.paprikaTsp} tsp</span></li>`;
+        sh += `<li><span>Kosher salt (for seasoning)</span><span>${r.seasonSaltTsp} tsp</span></li>`;
+        sh += `<li><span>Black pepper</span><span>${r.pepperTsp} tsp</span></li>`;
+        sh += `<li><span>Grated parmesan (optional)</span><span>${r.parmesanCup.toFixed(2)} cups</span></li>`;
+        sh += `<li><span>Sheet pans needed</span><span>${r.sheetPans} ct</span></li>`;
+      }
       sh += `</ul>`;
     });
+  }
+  if(plan.rubInfo){
+    const jugLabel = plan.rubInfo.jugs.toFixed(2);
+    sh += `<div class="shop-cat">BBQ Rub — ${jugLabel} jug${plan.rubInfo.jugs>1?'s':''} needed (${plan.rubInfo.meatLb.toFixed(1)} lb meat, 2 tbsp/lb)</div><ul class="shop-list">`;
+    sh += `<li><span>Chili powder</span><span>${plan.rubInfo.chiliPowderCups.toFixed(2)} cups</span></li>`;
+    sh += `<li><span>Cumin</span><span>${plan.rubInfo.cuminCups.toFixed(2)} cups</span></li>`;
+    sh += `<li><span>Garlic powder</span><span>${plan.rubInfo.garlicPowderCups.toFixed(2)} cups</span></li>`;
+    sh += `<li><span>Onion powder</span><span>${plan.rubInfo.onionPowderCups.toFixed(2)} cups</span></li>`;
+    sh += `<li><span>Hot cayenne pepper</span><span>${plan.rubInfo.cayenneCups.toFixed(2)} cups</span></li>`;
+    sh += `</ul><div class="note">Mix bulk ingredients first (chili powder, cumin, garlic powder, onion powder), then fold in the cayenne last. Doesn't include ribs — those are tracked by rack, not weight.</div>`;
+  }
+  if(plan.turkeySeasoningInfo){
+    const ts = plan.turkeySeasoningInfo;
+    sh += `<div class="shop-cat">Turkey Rub, Injection &amp; Brine — ${ts.birds} bird${ts.birds>1?'s':''}</div><ul class="shop-list">`;
+    sh += `<li><span>Cavender's Greek Seasoning</span><span>${ts.cavendersCups.toFixed(2)} cups</span></li>`;
+    sh += `<li><span>Knorr Roasted Chicken Base (16 oz container)</span><span>${ts.containers.toFixed(2)} containers</span></li>`;
+    sh += `<li><span>Water, for prepared broth</span><span>${(ts.containers*8).toFixed(1)} qt (8 qt per container)</span></li>`;
+    sh += `<li><span>Morton's salt (for brine)</span><span>${ts.saltCups.toFixed(2)} cups</span></li>`;
+    sh += `<li><span>Concentrated apple juice (can)</span><span>${ts.appleJuiceCans} can${ts.appleJuiceCans>1?'s':''}</span></li>`;
+    sh += `<li><span>Ice (bag)</span><span>${ts.iceBags} bag${ts.iceBags>1?'s':''}</span></li>`;
+    sh += `</ul><div class="note">Rub Cavender's over the bird. Mix each container of Knorr base with 8 qt water to make prepared broth (yields ${ts.brothQuarts.toFixed(1)} qt total); inject 4 qt per bird.</div>`;
+  }
+  if(plan.turkeyOilInfo){
+    const to = plan.turkeyOilInfo;
+    sh += `<div class="shop-cat">Frying Oil — ${to.birds} bird${to.birds>1?'s':''} fried</div><ul class="shop-list">`;
+    sh += `<li><span>Harvest Value Frying Oil (35 lb)</span><span>${to.jugs.toFixed(2)} jugs (${money(to.cost)})</span></li>`;
+    sh += `</ul><div class="note">Oil is reused ~8 birds before replacing — this is the amortized share of a fresh jug for this order.</div>`;
+  }
+  if(plan.woodChipsInfo){
+    const wc = plan.woodChipsInfo;
+    sh += `<div class="shop-cat">Wood Chips — ${wc.typesCount} meat type${wc.typesCount>1?'s':''} on the smoker</div><ul class="shop-list">`;
+    sh += `<li><span>Western Mesquite Smoking Chips (180 cu in bag)</span><span>${wc.bags.toFixed(2)} bags (${money(wc.cost)})</span></li>`;
+    sh += `</ul><div class="note">Flat ~half a bag per smoke regardless of quantity, plus a bit more per additional distinct meat type sharing the smoker — adjust the "little bit" estimate if it doesn't match your real usage.</div>`;
   }
   if(supplyShopLines.length){
     sh += `<div class="shop-cat">Service Supplies</div><ul class="shop-list">`;
@@ -1220,8 +1734,8 @@ function renderResults(plan){
     sh += `</ul>`;
   }
   sh += `<div class="shop-cat">Service &amp; Extras</div><ul class="shop-list">`;
-  sh += `<li><span>Full pans (meat — 1 shoulder/brisket/turkey per pan, 2 racks per pan)</span><span>${plan.meatPans} ct</span></li>`;
-  sh += `<li><span>Half pans (sides &amp; cornbread — 1 per pan ordered)</span><span>${plan.sidePans} ct</span></li>`;
+  sh += `<li><span>Full pans (meat — 1 shoulder/brisket/turkey per pan, 2 racks per pan)</span><span>${plan.meatPans} ct (${money(plan.meatPans*panCost())})</span></li>`;
+  sh += `<li><span>Half pans (sides &amp; cornbread — 1 per pan ordered)</span><span>${plan.sidePans} ct (${money(plan.sidePans*panCost())})</span></li>`;
   if(plan.guests){
     sh += `<li><span>Chafer sterno cans</span><span>${Math.ceil(plan.guests/25)*2} ct</span></li>`;
   } else {
@@ -1234,6 +1748,39 @@ function renderResults(plan){
 }
 
 /* ---------- post-event tracker (uses artifact persistent storage) ---------- */
+function renderFoodCost(plan){
+  const ticket = document.getElementById('foodCostTicket');
+  const body = document.getElementById('foodCostBody');
+  if(!plan.recipeItems.length){
+    ticket.style.display = 'none';
+    return;
+  }
+  ticket.style.display = '';
+  let html = `<table class="qty-table"><thead><tr><th>Item</th><th>Sell Price</th><th>Ingredient Cost</th><th>Margin</th></tr></thead><tbody>`;
+  let totalSell = 0, totalCost = 0, anyPartial = false;
+  plan.recipeItems.forEach(r=>{
+    totalSell += r.sellPrice;
+    totalCost += r.ingredientCost;
+    const partial = r.costsKnown < r.costsTotal;
+    if(partial) anyPartial = true;
+    const margin = r.sellPrice - r.ingredientCost;
+    const marginPct = r.sellPrice>0 ? (margin/r.sellPrice*100) : 0;
+    html += `<tr>
+      <td>${r.name}${partial?`<div class="item-sub" style="color:var(--smoke);">${r.costsKnown}/${r.costsTotal} ingredients priced — partial estimate</div>`:''}</td>
+      <td class="amt">${money(r.sellPrice)}</td>
+      <td class="amt">${money(r.ingredientCost)}${partial?'+':''}</td>
+      <td class="amt" style="color:${margin>=0?'var(--good)':'var(--warn)'};">${money(margin)}${partial?'+ (est.)':''} ${r.sellPrice>0?`(${marginPct.toFixed(0)}%)`:''}</td>
+    </tr>`;
+  });
+  const totalMargin = totalSell - totalCost;
+  html += `<tr class="total"><td>Total</td><td class="amt">${money(totalSell)}</td><td class="amt">${money(totalCost)}</td><td class="amt">${money(totalMargin)}</td></tr>`;
+  html += `</tbody></table>`;
+  if(anyPartial){
+    html += `<div class="note">Some ingredients don't have a cost entered yet, so those items' true cost is higher than shown and margin is lower than shown. Give me pricing for the remaining ingredients and these numbers will fill in.</div>`;
+  }
+  body.innerHTML = html;
+}
+
 function renderTracker(plan){
   const body = document.getElementById('trackerBody');
   if(!plan.trackItems.length){
@@ -1558,8 +2105,27 @@ function downloadICS(){
     evs.push({start:c.pullOff, minutes:c.restMin, title:`Cornerstone: Pull & rest ${c.name}`});
   });
   plan.recipeItems.forEach(r=>{
-    evs.push({start:r.prepStart, minutes:r.prepMin, title:`Cornerstone: Boil, dry & smash ${r.name}`});
-    evs.push({start:r.roastStart, minutes:r.cookMin, title:`Cornerstone: Roast ${r.name}`});
+    if(r.recipeType==='coleslaw' || r.recipeType==='potatosalad'){
+      evs.push({start:r.prepStart, minutes:r.prepMin, title:`Cornerstone: Open, pan & cover ${r.name}`});
+    } else if(r.recipeType==='beans'){
+      evs.push({start:r.prepStart, minutes:r.prepMin, title:`Cornerstone: Open & stir together ${r.name}`});
+      evs.push({start:r.roastStart, minutes:r.cookMin, title:`Cornerstone: Heat ${r.name} through`});
+    } else if(r.recipeType==='mac'){
+      evs.push({start:r.prepStart, minutes:r.prepMin, title:`Cornerstone: Cook macaroni & mix ${r.name}`});
+      evs.push({start:r.roastStart, minutes:r.cookMin, title:`Cornerstone: Bake ${r.name} at 350°F`});
+    } else if(r.recipeType==='cornbread'){
+      evs.push({start:r.prepStart, minutes:r.prepMin, title:`Cornerstone: Mix & pour ${r.name}`});
+      evs.push({start:r.roastStart, minutes:r.cookMin, title:`Cornerstone: Bake ${r.name}`});
+    } else if(r.recipeType==='rolls'){
+      const bakeStart = new Date(r.roastStart.getTime() + r.riseMin*60000);
+      evs.push({start:r.day1Start, minutes:r.overnightMin, title:`Cornerstone: Place frozen ${r.name} on sheet & refrigerate overnight`});
+      evs.push({start:r.prepStart, minutes:r.prepMin, title:`Cornerstone: Coat ${r.name} in butter mixture`});
+      evs.push({start:r.roastStart, minutes:r.riseMin, title:`Cornerstone: ${r.name} rising`});
+      evs.push({start:bakeStart, minutes:r.bakeMin, title:`Cornerstone: Bake ${r.name} at 375°F`});
+    } else {
+      evs.push({start:r.prepStart, minutes:r.prepMin, title:`Cornerstone: Boil, dry & smash ${r.name}`});
+      evs.push({start:r.roastStart, minutes:r.cookMin, title:`Cornerstone: Roast ${r.name}`});
+    }
   });
   if(plan.travel){
     evs.push({start:plan.travel.leaveTime, minutes:plan.travel.driveMinutes, title:`Cornerstone: Leave for jobsite (${plan.travel.miles.toFixed(1)} mi, ~${plan.travel.driveMinutes} min)`});
@@ -1593,6 +2159,516 @@ function downloadICS(){
   a.click();
   document.body.removeChild(a);
 }
+/* =========================================================================
+   RECEIPT SCANNER — internal, planner-only. Runs entirely in this browser:
+   Tesseract.js OCR + IndexedDB storage, no server, no account, no per-scan
+   cost. Nothing here is used by / linked from request-form.html.
+   ========================================================================= */
+const RECEIPT_DB_NAME = 'cornerstone_receipts';
+const RECEIPT_DB_VERSION = 2; // v2 adds the supplyItems store for non-food business expense tracking
+let receiptOcrWorker = null; // created once, reused across scans
+
+// Non-food business purchases (propane, gloves, pans, equipment...) tracked the same
+// way ingredients are, but NOT read by any recipe cost formula — this is purely a
+// price-history/expense-tracking catalog, built entirely from receipts (no seeded
+// defaults like PRICE_BOOK has). Populated from IndexedDB on load, see loadSupplyItems().
+let SUPPLY_BOOK = {};
+
+function openReceiptDB(){
+  return new Promise((resolve, reject) => {
+    if(!window.indexedDB){ reject(new Error('IndexedDB not available in this browser')); return; }
+    const req = indexedDB.open(RECEIPT_DB_NAME, RECEIPT_DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if(!db.objectStoreNames.contains('receipts')){
+        const store = db.createObjectStore('receipts', {keyPath:'id', autoIncrement:true});
+        store.createIndex('date', 'date');
+      }
+      if(!db.objectStoreNames.contains('priceOverrides')){
+        db.createObjectStore('priceOverrides', {keyPath:'id'}); // id = PRICE_BOOK key
+      }
+      if(!db.objectStoreNames.contains('supplyItems')){
+        db.createObjectStore('supplyItems', {keyPath:'id', autoIncrement:true}); // non-food tracked items
+      }
+    };
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror = (e) => reject(e.target.error);
+  });
+}
+function idbRequest(req){
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function idbTxDone(tx){
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+// Apply any previously-saved price overrides to the live PRICE_BOOK on load.
+// Recipe costs are all () => priceBookRate(...) functions, so this takes effect
+// immediately for every recipe without needing a page reload.
+async function loadPriceOverrides(){
+  try {
+    const db = await openReceiptDB();
+    const tx = db.transaction('priceOverrides', 'readonly');
+    const all = await idbRequest(tx.objectStore('priceOverrides').getAll());
+    all.forEach(o => {
+      if(PRICE_BOOK[o.id]){
+        PRICE_BOOK[o.id].price = o.price;
+        PRICE_BOOK[o.id].size = o.size;
+        PRICE_BOOK[o.id].unit = o.unit || PRICE_BOOK[o.id].unit;
+        PRICE_BOOK[o.id].updatedAt = o.updatedAt;
+        PRICE_BOOK[o.id].updatedFrom = 'receipt scan';
+      }
+    });
+  } catch(err){
+    console.warn('Receipt Scanner: could not load saved price overrides', err);
+  }
+}
+// Loads every tracked non-food supply into the in-memory SUPPLY_BOOK on page load.
+async function loadSupplyItems(){
+  try {
+    const db = await openReceiptDB();
+    const tx = db.transaction('supplyItems', 'readonly');
+    const all = await idbRequest(tx.objectStore('supplyItems').getAll());
+    SUPPLY_BOOK = {};
+    all.forEach(s => { SUPPLY_BOOK[s.id] = s; });
+    refreshSupplyBookDisplay();
+  } catch(err){
+    console.warn('Receipt Scanner: could not load tracked supplies', err);
+  }
+}
+loadPriceOverrides();
+loadSupplyItems();
+refreshReceiptLog();
+
+// Downscale + re-encode the photo client-side before storing, so a multi-MB phone
+// photo doesn't balloon IndexedDB usage. Returns a JPEG Blob.
+function compressReceiptImage(file, maxDim, quality){
+  maxDim = maxDim || 1600; quality = quality || 0.72;
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      let {width, height} = img;
+      if(width > maxDim || height > maxDim){
+        const scale = maxDim / Math.max(width, height);
+        width = Math.round(width*scale); height = Math.round(height*scale);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      canvas.toBlob(blob => { URL.revokeObjectURL(url); blob ? resolve(blob) : reject(new Error('Could not compress image')); }, 'image/jpeg', quality);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read image')); };
+    img.src = url;
+  });
+}
+
+function normalizeReceiptText(s){
+  return (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+// Best-effort match of an OCR'd item description against PRICE_BOOK entries —
+// scores by fraction of the ingredient label's significant words found in the
+// line. Deliberately loose: the review screen is where a bad match gets fixed
+// or rejected, not here.
+function bestLabelMatch(words, labelRaw){
+  const label = normalizeReceiptText(labelRaw.replace(/\([^)]*\)/g, ''));
+  const labelWords = label.split(' ').filter(w => w.length > 2);
+  if(!labelWords.length) return 0;
+  let hits = 0;
+  labelWords.forEach(w => { if(words.has(w)) hits++; });
+  // Receipt text is usually a short, abbreviated slice of the fuller catalog label
+  // ("BUTTERMILK QT" vs "Kroger Cultured 1.5% Reduced Fat Buttermilk (quart)"), so
+  // score against whichever side is shorter rather than always the full label —
+  // otherwise a single correct word on a short receipt line never scores highly.
+  return hits / Math.min(labelWords.length, words.size);
+}
+// Matches an OCR'd line against BOTH catalogs — PRICE_BOOK (recipe ingredients) and
+// SUPPLY_BOOK (tracked non-food business purchases) — and returns whichever scores
+// higher, tagged with which catalog it came from.
+function matchCatalogItem(lineText){
+  const words = new Set(normalizeReceiptText(lineText).split(' ').filter(w => w.length > 2));
+  if(!words.size) return null;
+  let best = null, bestScore = 0;
+  for(const id in PRICE_BOOK){
+    const score = bestLabelMatch(words, PRICE_BOOK[id].label);
+    if(score > bestScore){ bestScore = score; best = {catalog:'ingredient', id}; }
+  }
+  for(const id in SUPPLY_BOOK){
+    const score = bestLabelMatch(words, SUPPLY_BOOK[id].label);
+    if(score > bestScore){ bestScore = score; best = {catalog:'supply', id}; }
+  }
+  return (best && bestScore >= 0.34) ? {...best, score: bestScore} : null;
+}
+// Splits OCR'd receipt text into candidate {itemText, price} lines, and takes
+// a guess at the receipt total if a "total" line is present.
+function parseReceiptText(text){
+  const priceRe = /\$?\s*(\d{1,4}\.\d{2})(?!\d)/;
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const items = [];
+  let totalGuess = null;
+  let carryText = '';
+  lines.forEach(line => {
+    const m = line.match(priceRe);
+    if(!m){ carryText = line; return; }
+    const price = parseFloat(m[1]);
+    const before = line.slice(0, m.index).trim();
+    if(/sub ?total/i.test(line)){ carryText = ''; return; }
+    if(/total|balance|amount due/i.test(line)){ totalGuess = price; carryText = ''; return; }
+    if(/^tax\b/i.test(line) || /sales tax/i.test(line)){ carryText = ''; return; }
+    const itemText = before.length > 2 ? before : carryText;
+    if(itemText) items.push({rawLine: line, itemText, price});
+    carryText = '';
+  });
+  return {items, totalGuess, vendorGuess: lines[0] || ''};
+}
+
+async function handleReceiptPhoto(evt){
+  const file = evt.target.files && evt.target.files[0];
+  if(!file) return;
+  const statusEl = document.getElementById('receiptScanStatus');
+  const reviewEl = document.getElementById('receiptReviewArea');
+  reviewEl.style.display = 'none'; reviewEl.innerHTML = '';
+  statusEl.style.display = ''; statusEl.textContent = 'Reading receipt… this can take a few seconds.';
+
+  try {
+    const compressed = await compressReceiptImage(file);
+    if(!receiptOcrWorker){
+      statusEl.textContent = 'Loading OCR (first scan only)…';
+      receiptOcrWorker = await Tesseract.createWorker('eng');
+    }
+    statusEl.textContent = 'Reading receipt…';
+    const result = await receiptOcrWorker.recognize(compressed);
+    const parsed = parseReceiptText(result.data.text);
+    statusEl.style.display = 'none';
+    renderReceiptReview(parsed, compressed);
+  } catch(err){
+    console.error(err);
+    statusEl.textContent = "Couldn't read that photo — try again with better light/focus, or enter the price manually below.";
+    renderReceiptReview({items: [], totalGuess: null, vendorGuess: ''}, null);
+  } finally {
+    evt.target.value = ''; // allow re-selecting the same file again later
+  }
+}
+
+let pendingReceiptPhotoBlob = null;
+// Select value scheme: "" = no match/skip, "ing:<id>" = PRICE_BOOK ingredient,
+// "sup:<id>" = existing tracked SUPPLY_BOOK item, "sup:new" = create a new tracked
+// supply from this line (reveals a name field).
+function buildCatalogOptions(selected){
+  let html = '<optgroup label="Ingredients">';
+  html += Object.keys(PRICE_BOOK).map(id =>
+    `<option value="ing:${id}"${selected===`ing:${id}` ? ' selected' : ''}>${PRICE_BOOK[id].label}</option>`
+  ).join('');
+  html += '</optgroup><optgroup label="Business Supplies">';
+  html += Object.keys(SUPPLY_BOOK).map(id =>
+    `<option value="sup:${id}"${selected===`sup:${id}` ? ' selected' : ''}>${SUPPLY_BOOK[id].label}</option>`
+  ).join('');
+  html += `<option value="sup:new"${selected==='sup:new' ? ' selected' : ''}>+ Track as a new business supply…</option>`;
+  html += '</optgroup>';
+  return html;
+}
+function onReceiptMatchChange(i){
+  const sel = document.getElementById(`rcpt_match_${i}`);
+  const nameField = document.getElementById(`rcpt_newname_field_${i}`);
+  if(nameField) nameField.style.display = (sel.value === 'sup:new') ? '' : 'none';
+  // Nicety: if this line is matched to a tracked business supply, nudge the
+  // receipt-level category toward "Supplies" — only if the user hasn't already
+  // changed it away from the default, so we don't stomp a manual choice.
+  const catEl = document.getElementById('rcpt_category');
+  if(catEl && sel.value.startsWith('sup:') && catEl.value === 'Ingredients'){
+    catEl.value = 'Supplies';
+  }
+}
+function renderReceiptReview(parsed, photoBlob){
+  pendingReceiptPhotoBlob = photoBlob;
+  const reviewEl = document.getElementById('receiptReviewArea');
+
+  let rows = parsed.items.map((it, i) => {
+    const match = matchCatalogItem(it.itemText);
+    const selectedVal = match ? `${match.catalog==='ingredient'?'ing':'sup'}:${match.id}` : '';
+    const catalogEntry = match ? (match.catalog==='ingredient' ? PRICE_BOOK[match.id] : SUPPLY_BOOK[match.id]) : null;
+    return `
+      <div class="field" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;" data-row="${i}">
+        <label>OCR read: "${it.itemText}" — $${it.price.toFixed(2)}</label>
+        <div class="grid2">
+          <div class="field">
+            <label>Update / track as</label>
+            <select id="rcpt_match_${i}" onchange="onReceiptMatchChange(${i})"><option value="" ${match?'':'selected'}>— no match, skip —</option>${buildCatalogOptions(selectedVal)}</select>
+          </div>
+          <div class="field">
+            <label>Price paid</label>
+            <input type="number" step="0.01" id="rcpt_price_${i}" value="${it.price.toFixed(2)}">
+          </div>
+        </div>
+        <div class="field" id="rcpt_newname_field_${i}" style="display:none;">
+          <label>New supply name</label>
+          <input type="text" id="rcpt_newname_${i}" placeholder="e.g. Nitrile Gloves (box of 100), Propane Refill">
+        </div>
+        <div class="grid2">
+          <div class="field">
+            <label>Package size</label>
+            <input type="number" step="0.01" id="rcpt_size_${i}" value="${catalogEntry ? catalogEntry.size : 1}" placeholder="e.g. 5">
+          </div>
+          <div class="field">
+            <label>Unit</label>
+            <input type="text" id="rcpt_unit_${i}" value="${catalogEntry ? catalogEntry.unit : 'ea'}" placeholder="e.g. lb, oz, ct, ea">
+          </div>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400;">
+          <input type="checkbox" id="rcpt_apply_${i}" ${match ? 'checked' : ''} style="width:auto;">
+          Apply this update
+        </label>
+      </div>`;
+  }).join('');
+  if(!rows) rows = `<div class="note">No line items were read automatically — you can still log this receipt below without updating any prices.</div>`;
+
+  const today = new Date().toISOString().slice(0,10);
+  reviewEl.innerHTML = `
+    <div class="group-label">Review Before Saving</div>
+    <div class="group-note">Nothing is applied until you hit Confirm — edit or uncheck anything OCR got wrong.</div>
+    <div class="grid2">
+      <div class="field"><label>Vendor</label><input type="text" id="rcpt_vendor" value="${(parsed.vendorGuess||'').replace(/"/g,'&quot;')}" placeholder="e.g. Kroger, Walmart, US Foods Chef'Store"></div>
+      <div class="field"><label>Date</label><input type="date" id="rcpt_date" value="${today}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Total paid (this receipt)</label><input type="number" step="0.01" id="rcpt_total" value="${parsed.totalGuess!=null ? parsed.totalGuess.toFixed(2) : ''}" placeholder="e.g. 42.17"></div>
+      <div class="field"><label>Category (for Quicken)</label>
+        <select id="rcpt_category">
+          <option value="Ingredients">Ingredients</option>
+          <option value="Supplies">Supplies</option>
+          <option value="Equipment">Equipment</option>
+          <option value="Fuel/Mileage">Fuel/Mileage</option>
+          <option value="Other Business Expense">Other Business Expense</option>
+        </select>
+      </div>
+    </div>
+    <div id="rcptItemRows">${rows}</div>
+    <div class="actions" style="margin-top:16px;">
+      <button class="primary" onclick="confirmReceiptSave()">Confirm &amp; Save</button>
+      <button class="secondary" onclick="discardReceiptReview()">Discard</button>
+    </div>
+  `;
+  reviewEl.dataset.itemCount = parsed.items.length;
+  reviewEl.style.display = '';
+}
+
+function discardReceiptReview(){
+  pendingReceiptPhotoBlob = null;
+  const reviewEl = document.getElementById('receiptReviewArea');
+  reviewEl.style.display = 'none'; reviewEl.innerHTML = '';
+}
+
+async function confirmReceiptSave(){
+  const reviewEl = document.getElementById('receiptReviewArea');
+  const count = parseInt(reviewEl.dataset.itemCount || '0', 10);
+  const vendor = document.getElementById('rcpt_vendor').value.trim() || 'Unknown vendor';
+  const date = document.getElementById('rcpt_date').value || new Date().toISOString().slice(0,10);
+  const totalVal = parseFloat(document.getElementById('rcpt_total').value);
+  const category = document.getElementById('rcpt_category').value;
+  const nowIso = new Date(date).toISOString();
+
+  // Select value scheme: "" = no match/skip, "ing:<id>" = PRICE_BOOK ingredient,
+  // "sup:<id>" = existing SUPPLY_BOOK item, "sup:new" = create a new tracked supply.
+  const lineItems = [];
+  for(let i=0; i<count; i++){
+    const sel = document.getElementById(`rcpt_match_${i}`);
+    const applyEl = document.getElementById(`rcpt_apply_${i}`);
+    const raw = sel ? sel.value : '';
+    const isNewSupply = raw === 'sup:new';
+    const catalog = raw.startsWith('ing:') ? 'ingredient' : (raw.startsWith('sup:') ? 'supply' : null);
+    const rawId = catalog === 'ingredient' ? raw.slice(4) : (catalog === 'supply' && !isNewSupply ? raw.slice(4) : '');
+    const newName = isNewSupply ? (document.getElementById(`rcpt_newname_${i}`).value || '').trim() : '';
+    const price = parseFloat(document.getElementById(`rcpt_price_${i}`).value);
+    const size = parseFloat(document.getElementById(`rcpt_size_${i}`).value);
+    const unit = document.getElementById(`rcpt_unit_${i}`).value.trim();
+    const apply = applyEl ? applyEl.checked : false;
+    const hasValidNumbers = isFinite(price) && isFinite(size) && size > 0;
+    const hasTarget = catalog === 'ingredient' ? !!rawId : (isNewSupply ? !!newName : (catalog === 'supply' ? !!rawId : false));
+    lineItems.push({
+      catalog,
+      priceBookId: catalog === 'ingredient' ? rawId : null,
+      supplyId: (catalog === 'supply' && !isNewSupply) ? rawId : null,
+      isNewSupply, newName,
+      price: isFinite(price) ? price : null, size: isFinite(size) ? size : null, unit,
+      applied: !!(apply && catalog && hasTarget && hasValidNumbers)
+    });
+  }
+
+  try {
+    const db = await openReceiptDB();
+
+    // apply ingredient price updates — same as before
+    const overrideTx = db.transaction('priceOverrides', 'readwrite');
+    const overrideStore = overrideTx.objectStore('priceOverrides');
+    lineItems.filter(li => li.applied && li.catalog === 'ingredient').forEach(li => {
+      PRICE_BOOK[li.priceBookId].price = li.price;
+      PRICE_BOOK[li.priceBookId].size = li.size;
+      if(li.unit) PRICE_BOOK[li.priceBookId].unit = li.unit;
+      PRICE_BOOK[li.priceBookId].updatedAt = nowIso;
+      PRICE_BOOK[li.priceBookId].updatedFrom = 'receipt scan';
+      overrideStore.put({id: li.priceBookId, price: li.price, size: li.size, unit: li.unit || PRICE_BOOK[li.priceBookId].unit, updatedAt: nowIso});
+    });
+    await idbTxDone(overrideTx);
+
+    // apply business-supply updates and new-supply creation
+    const supplyLines = lineItems.filter(li => li.applied && li.catalog === 'supply');
+    if(supplyLines.length){
+      const supplyTx = db.transaction('supplyItems', 'readwrite');
+      const supplyStore = supplyTx.objectStore('supplyItems');
+      for(const li of supplyLines){
+        if(li.isNewSupply){
+          const record = {label: li.newName, price: li.price, size: li.size, unit: li.unit || 'ea', updatedAt: nowIso, updatedFrom: 'receipt scan'};
+          const newId = await idbRequest(supplyStore.add(record));
+          record.id = newId;
+          SUPPLY_BOOK[newId] = record;
+          li.supplyId = newId; // so the logged receipt/export can reference the new item
+        } else {
+          const existing = SUPPLY_BOOK[li.supplyId];
+          if(existing){
+            existing.price = li.price;
+            existing.size = li.size;
+            if(li.unit) existing.unit = li.unit;
+            existing.updatedAt = nowIso;
+            existing.updatedFrom = 'receipt scan';
+            supplyStore.put(existing);
+          }
+        }
+      }
+      await idbTxDone(supplyTx);
+      refreshSupplyBookDisplay();
+    }
+
+    // save the receipt itself
+    const receiptTx = db.transaction('receipts', 'readwrite');
+    await idbRequest(receiptTx.objectStore('receipts').add({
+      date, vendor, total: isFinite(totalVal) ? totalVal : null, category,
+      lineItems, photo: pendingReceiptPhotoBlob, createdAt: new Date(nowIso).getTime() || Date.now()
+    }));
+
+    discardReceiptReview();
+    await refreshReceiptLog();
+    const statusEl = document.getElementById('receiptScanStatus');
+    statusEl.style.display = '';
+    statusEl.textContent = `Saved. ${lineItems.filter(li=>li.applied).length} price(s) updated — they'll show up next time you Build The Ticket.`;
+  } catch(err){
+    console.error(err);
+    alert("Couldn't save this receipt: " + err.message);
+  }
+}
+
+// Renders the "Tracked Business Supplies" list — same pattern as refreshReceiptLog,
+// but reads from the in-memory SUPPLY_BOOK (kept in sync with the supplyItems store).
+async function refreshSupplyBookDisplay(){
+  const el = document.getElementById('supplyBookBody');
+  if(!el) return;
+  const ids = Object.keys(SUPPLY_BOOK);
+  if(!ids.length){ el.innerHTML = '<div class="note">No business supplies tracked yet.</div>'; return; }
+  ids.sort((a,b) => (SUPPLY_BOOK[a].label||'').localeCompare(SUPPLY_BOOK[b].label||''));
+  el.innerHTML = ids.map(id => {
+    const s = SUPPLY_BOOK[id];
+    const rate = (s.size ? s.price / s.size : s.price) || 0;
+    return `<div class="item-row"><span>${s.label} — $${Number(s.price).toFixed(2)} / ${s.size} ${s.unit}${s.updatedAt ? `<div class="item-sub">updated ${String(s.updatedAt).slice(0,10)} — ${money(rate)}/${s.unit}</div>` : ''}</span>
+      <button type="button" class="secondary" style="padding:4px 10px;font-size:11px;" onclick="deleteSupplyItem(${JSON.stringify(id)})">Delete</button></div>`;
+  }).join('');
+}
+
+async function deleteSupplyItem(id){
+  if(!confirm('Stop tracking this business supply? This does not affect any receipts already logged.')) return;
+  try {
+    const db = await openReceiptDB();
+    const tx = db.transaction('supplyItems', 'readwrite');
+    await idbRequest(tx.objectStore('supplyItems').delete(Number(id)));
+    delete SUPPLY_BOOK[id];
+    refreshSupplyBookDisplay();
+  } catch(err){
+    alert("Couldn't delete: " + err.message);
+  }
+}
+
+async function refreshReceiptLog(){
+  const el = document.getElementById('receiptLogBody');
+  if(!el) return;
+  try {
+    const db = await openReceiptDB();
+    const tx = db.transaction('receipts', 'readonly');
+    const all = await idbRequest(tx.objectStore('receipts').getAll());
+    if(!all.length){ el.innerHTML = '<div class="note">No receipts logged yet.</div>'; return; }
+    all.sort((a,b) => (b.createdAt||0) - (a.createdAt||0));
+    el.innerHTML = all.map(r => {
+      const applied = r.lineItems ? r.lineItems.filter(li=>li.applied).length : 0;
+      return `<div class="item-row"><span>${r.date} — ${r.vendor}${r.total!=null ? ' — '+money(r.total) : ''}<div class="item-sub">${r.category}${applied ? `, ${applied} price update${applied>1?'s':''}` : ''}</div></span>
+        <button type="button" class="secondary" style="padding:4px 10px;font-size:11px;" onclick="deleteReceipt(${r.id})">Delete</button></div>`;
+    }).join('');
+  } catch(err){
+    console.warn('Could not load receipt log', err);
+  }
+}
+
+async function deleteReceipt(id){
+  if(!confirm('Delete this logged receipt? This does not undo any price updates it already applied.')) return;
+  try {
+    const db = await openReceiptDB();
+    const tx = db.transaction('receipts', 'readwrite');
+    await idbRequest(tx.objectStore('receipts').delete(id));
+    refreshReceiptLog();
+  } catch(err){
+    alert("Couldn't delete: " + err.message);
+  }
+}
+
+// Quicken CSV export — matches Quicken's official required column order exactly:
+// Date, Payee, FI Payee, Amount, Debit/Credit, Category, Account, then optional
+// Tag, Memo, Chknum. Amount is negative (an outflow/expense).
+function csvField(v){
+  const s = (v===null||v===undefined) ? '' : String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+async function exportQuickenCSV(){
+  try {
+    const db = await openReceiptDB();
+    const tx = db.transaction('receipts', 'readonly');
+    const all = await idbRequest(tx.objectStore('receipts').getAll());
+    if(!all.length){ alert('No logged receipts to export yet.'); return; }
+    all.sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
+    const header = ['Date','Payee','FI Payee','Amount','Debit/Credit','Category','Account','Tag','Memo','Chknum'];
+    const rows = [header.join(',')];
+    all.forEach(r => {
+      // r.date is a plain "YYYY-MM-DD" string from the date input — reformat it directly
+      // rather than round-tripping through Date(), which shifts by a day near midnight
+      // in timezones behind UTC (e.g. US timezones).
+      const dparts = (r.date || '').split('-').map(Number);
+      const dateStr = (dparts.length===3 && dparts.every(n=>!isNaN(n))) ? `${dparts[1]}/${dparts[2]}/${dparts[0]}` : r.date;
+      const amount = r.total!=null ? -Math.abs(r.total) : '';
+      // catalog is only present on receipts logged after the Business Supplies
+      // feature shipped — fall back to "ingredient" for older logged receipts,
+      // which only ever wrote priceBookId.
+      const itemSummary = (r.lineItems||[]).filter(li=>li.priceBookId || li.supplyId || li.newName).map(li => {
+        const catalog = li.catalog || (li.priceBookId ? 'ingredient' : null);
+        if(catalog === 'ingredient') return (PRICE_BOOK[li.priceBookId] && PRICE_BOOK[li.priceBookId].label) || li.priceBookId;
+        if(catalog === 'supply') return (SUPPLY_BOOK[li.supplyId] && SUPPLY_BOOK[li.supplyId].label) || li.newName || li.supplyId;
+        return null;
+      }).filter(Boolean).join('; ');
+      rows.push([dateStr, r.vendor, r.vendor, amount, '', r.category, '', '', itemSummary, ''].map(csvField).join(','));
+    });
+    const blob = new Blob([rows.join('\r\n')], {type:'text/csv'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'cornerstone-receipts-quicken.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch(err){
+    alert("Couldn't export: " + err.message);
+  }
+}
+
 </script>
 </body>
 </html>

@@ -438,7 +438,7 @@ function renderQuote(quote){
   } else {
     meatEl.style.display = 'none';
   }
-  let rows = quote.lineItems.map(li=>`<tr><td>${li.name}</td><td class="amt">${money(li.cost)}</td></tr>`).join('');
+  let rows = quote.lineItems.map(li=>`<tr><td>${li.name}${li.amt ? `<div class="item-sub">${li.amt}</div>` : ''}</td><td class="amt">${money(li.cost)}</td></tr>`).join('');
   rows += `<tr class="total"><td>Estimated Total</td><td class="amt">${money(quote.total)}</td></tr>`;
   document.getElementById('quoteTable').innerHTML = rows;
   document.getElementById('quoteResult').style.display = 'block';

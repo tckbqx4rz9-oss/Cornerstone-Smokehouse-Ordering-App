@@ -198,11 +198,14 @@
 <script>
 /* ---------- menu data (kept in sync with the internal planner) ---------- */
 const MEATS = [
-  {key:'brisket', name:'Texas-Style Beef Brisket', price:30.99, min:6, cookedLbPerPerson:0.20, avgBirdOrPiece:18, cookedYieldPct:0.50},
-  {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, cookedYieldPct:0.55},
-  {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, cookedYieldPct:0.72},
-  {key:'tritip',  name:'Tri Tip',                    price:28.99, min:2, cookedLbPerPerson:0.23, cookedYieldPct:0.75}
+  {key:'brisket', name:'Texas-Style Beef Brisket', price:30.99, min:6, cookedLbPerPerson:0.20, packageRawLb:16, packageLabel:'brisket', cookedYieldPct:0.50},
+  {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, packageRawLb:18, packageLabel:'bag', cookedYieldPct:0.55},
+  {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, packageRawLb:10, packageLabel:'bag', cookedYieldPct:0.72},
+  {key:'tritip',  name:'Tri Tip',                    price:28.99, min:2, cookedLbPerPerson:0.23, cookedYieldPct:0.75} // no standard package size on hand yet — auto-fill stays a plain lb number until we have one
 ];
+// Cooked-lb equivalent of one whole package (one brisket, one bag) — used to snap
+// auto-filled amounts to whole packages instead of an arbitrary lb number.
+MEATS.forEach(m=>{ if(m.packageRawLb) m.packageCookedLb = m.packageRawLb*m.cookedYieldPct; });
 const TURKEYS = [
   {key:'turkey', name:'Whole Smoked Turkey', price:110, avgBirdLb:13.5, cookedLbPerPerson:0.16, cookedYieldPct:0.45},
   {key:'smofriedturkey', name:'Smofried Turkey', price:120, avgBirdLb:13.5, cookedLbPerPerson:0.16, cookedYieldPct:0.45},
@@ -266,7 +269,7 @@ function row(key, name, sub, exactUnit, exactPlaceholder){
   </div>`;
 }
 menuEl.insertAdjacentHTML('beforeend', '<div class="group-label">Smoked Meats</div>');
-menuEl.insertAdjacentHTML('beforeend', '<div class="note" style="margin:0 0 10px;">Leave "exact" blank to auto-calculate from guest count, or enter a specific amount to order that regardless of headcount (e.g. 1 pan of mac and cheese).</div>');
+menuEl.insertAdjacentHTML('beforeend', '<div class="note" style="margin:0 0 10px;">Leave "exact" blank to auto-calculate from guest count, or enter a specific amount to order that regardless of headcount (e.g. 1 pan of mac and cheese). These four meats share one total lb budget for your guest count — enter an exact lb amount for one and the rest (left on auto) adjust to make up the difference, so the total stays the same no matter the mix.</div>');
 MEATS.forEach(m=>menuEl.insertAdjacentHTML('beforeend', row(m.key, m.name, `$${m.price.toFixed(2)}/lb`, 'lb', 'e.g. 20')));
 menuEl.insertAdjacentHTML('beforeend', '<div class="group-label">Whole Turkey</div>');
 TURKEYS.forEach(t=>menuEl.insertAdjacentHTML('beforeend', row(t.key, t.name, `$${t.price.toFixed(2)} each`, 'whole', 'e.g. 2')));
@@ -307,22 +310,81 @@ function calculateQuote(){
   let anyChecked = false;
   let meatLbs = 0;   // running total of cooked lbs across all by-the-pound meats + turkey (cooked-lb equivalent)
   let ribRacks = 0;  // ribs are priced/ordered by the rack, not the lb, so tracked separately
+  let meatBudgetNote = null; // set if every by-the-pound meat was manually overridden and the total doesn't match the guest-count target
   function exactVal(key){
     const v = document.getElementById('exact_'+key).value;
     return v ? Math.max(0, Math.round(parseFloat(v))) : null;
   }
 
-  MEATS.forEach(m=>{
-    if(!document.getElementById('chk_'+m.key).checked) return;
+  // Brisket/pork/chicken/tri tip share one fixed total-lb budget for the guest count —
+  // the same total no matter which of them you pick. Typing an exact lb amount for one
+  // only pins THAT one; whichever of the others you've left on auto absorb the shift so
+  // the group total stays put, instead of each meat being calculated independently.
+  const checkedMeats = MEATS.filter(m => document.getElementById('chk_'+m.key).checked);
+  if(checkedMeats.length){
     anyChecked = true;
-    const exact = exactVal(m.key);
-    checkedKeys.push({key:m.key, exact});
-    const finalCookedLbs = exact!==null ? Math.max(exact, m.min) : Math.max(roundUp(m.cookedLbPerPerson*guests, 1), m.min);
-    const cost = finalCookedLbs*m.price*MARKUP;
-    total += cost;
-    meatLbs += finalCookedLbs;
-    lineItems.push({name:m.name, amt:`${finalCookedLbs} lb`, cost});
-  });
+    const defaultLbs = {}; // each meat's own guest-count-driven default (before any override)
+    let targetTotal = 0;
+    checkedMeats.forEach(m=>{
+      defaultLbs[m.key] = Math.max(roundUp(m.cookedLbPerPerson*guests, 1), m.min);
+      targetTotal += defaultLbs[m.key];
+    });
+
+    const overridden = []; // meats with a typed exact amount — pinned as-is
+    const auto = [];       // meats left blank — absorb whatever's left of the budget
+    checkedMeats.forEach(m=>{
+      const exact = exactVal(m.key);
+      checkedKeys.push({key:m.key, exact});
+      if(exact !== null) overridden.push({m, lbs: Math.max(exact, m.min)});
+      else auto.push(m);
+    });
+
+    const overriddenTotal = overridden.reduce((s,o)=>s+o.lbs, 0);
+    const remaining = Math.max(0, targetTotal - overriddenTotal);
+    const autoDefaultTotal = auto.reduce((s,m)=>s+defaultLbs[m.key], 0);
+
+    const finalLbs = {};
+    overridden.forEach(o=>{ finalLbs[o.m.key] = o.lbs; });
+    if(overridden.length === 0){
+      // nothing overridden — nobody's asking any meat to make up a difference, so leave
+      // every meat at its own plain guest-count default (unrounded to package size), same
+      // as before this feature existed. Package-rounding only kicks in once redistribution
+      // is actually happening below.
+      auto.forEach(m=>{ finalLbs[m.key] = defaultLbs[m.key]; });
+    } else {
+      auto.forEach(m=>{
+        // split what's left of the budget proportionally to this meat's own default share
+        // of the auto group, so the mix among untouched meats still roughly matches the
+        // guest-count-driven defaults rather than piling everything onto just one
+        const share = autoDefaultTotal > 0 ? (defaultLbs[m.key]/autoDefaultTotal) : (1/auto.length);
+        let lbs = Math.max(m.min, remaining*share);
+        // snap auto-filled amounts up to a whole package (brisket/bag) so the number
+        // matches what actually gets ordered, rather than an arbitrary lb figure
+        lbs = m.packageCookedLb ? roundUp(lbs, m.packageCookedLb) : roundUp(lbs, 1);
+        finalLbs[m.key] = lbs;
+      });
+    }
+
+    const actualMeatTotal = Object.values(finalLbs).reduce((s,v)=>s+v, 0);
+    if(auto.length === 0 && Math.abs(actualMeatTotal - targetTotal) >= 1){
+      // every meat was manually pinned, so there's nothing left to auto-adjust —
+      // surface the gap instead of silently serving less (or more) than the guest count implies
+      meatBudgetNote = `Heads up — with the amounts you've entered, total meat comes to ${Math.round(actualMeatTotal)} lb. For ${guests} guests across these meats we'd typically plan around ${Math.round(targetTotal)} lb. Adjust an amount above, or clear one back to blank to let it auto-fill the difference.`;
+    }
+
+    checkedMeats.forEach(m=>{
+      const finalCookedLbs = Math.round(finalLbs[m.key]*10)/10; // package rounding can leave a fractional lb (e.g. 8 bags of pork = 79.2 lb) — keep displayed lbs and charged lbs the same number
+      const cost = finalCookedLbs*m.price*MARKUP;
+      total += cost;
+      meatLbs += finalCookedLbs;
+      let amt = `${finalCookedLbs} lb`;
+      if(auto.includes(m) && m.packageCookedLb){
+        const packs = Math.round(finalCookedLbs/m.packageCookedLb);
+        amt += ` (~${packs} ${m.packageLabel}${packs>1?'s':''})`;
+      }
+      lineItems.push({name:m.name, amt, cost});
+    });
+  }
   TURKEYS.forEach(t=>{
     if(!document.getElementById('chk_'+t.key).checked) return;
     anyChecked = true;
@@ -413,7 +475,7 @@ function calculateQuote(){
     lineItems.push({name:'Full-Service Staffing', amt:`${guests} guests`, cost:fee});
   }
 
-  lastQuote = {guests, serviceMethod, address, eventDate, serveTime, eventName:document.getElementById('eventName').value.trim(), lineItems, total, deliveryFeeApplied:false, checkedKeys, meatLbs, ribRacks};
+  lastQuote = {guests, serviceMethod, address, eventDate, serveTime, eventName:document.getElementById('eventName').value.trim(), lineItems, total, deliveryFeeApplied:false, checkedKeys, meatLbs, ribRacks, meatBudgetNote};
   renderQuote(lastQuote);
 
   if(serviceMethod==='delivery'){
@@ -433,7 +495,8 @@ function renderQuote(quote){
     if(quote.ribRacks > 0) line += (line ? ' + ' : '') + `${quote.ribRacks} rack${quote.ribRacks>1?'s':''} of ribs`;
     line += ` for ${quote.guests} guest${quote.guests!==1?'s':''}`;
     const perGuestNote = meatLbsRounded > 0 ? ` — that's about ${(quote.meatLbs/quote.guests).toFixed(2)} lb of meat per guest.` : '';
-    meatEl.innerHTML = `<div class="meat-summary-line">${line}</div><div class="meat-summary-sub">${perGuestNote} Want more of one meat and less of another, or to trade a pan of a side for something else? Adjust the "exact" amounts on the menu above and hit "See My Price" again — nothing is locked in until you send the request.</div>`;
+    const budgetWarning = quote.meatBudgetNote ? `<div class="meat-summary-sub" style="color:var(--warn);margin-top:8px;">${quote.meatBudgetNote}</div>` : '';
+    meatEl.innerHTML = `<div class="meat-summary-line">${line}</div><div class="meat-summary-sub">${perGuestNote} Want more of one meat and less of another, or to trade a pan of a side for something else? Adjust the "exact" amounts on the menu above and hit "See My Price" again — nothing is locked in until you send the request.</div>${budgetWarning}`;
     meatEl.style.display = 'block';
   } else {
     meatEl.style.display = 'none';

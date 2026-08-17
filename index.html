@@ -543,7 +543,7 @@
 <script>
 /* ---------- menu data (matches current Cornerstone pricing) ---------- */
 const MEATS = [
-  {key:'brisket', name:'Texas-Style Beef Brisket', price:30.99, min:6, cookedLbPerPerson:0.20, avgPieceLb:18, cookHrPerLb:22/18, restMin:75, panLb:18, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.50},
+  {key:'brisket', name:'Texas-Style Beef Brisket', price:30.99, min:6, cookedLbPerPerson:0.20, avgPieceLb:16, cookHrPerLb:22/18, restMin:75, panLb:16, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.50}, // avgPieceLb corrected to the real ~16lb wet weight; cookHrPerLb rate left as-is (still ~1.22hr/lb), so total smoke time scales down proportionally to ~19.6hr instead of 22hr
   {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, avgPieceLb:18, cookHrPerLb:18/18, restMin:60, panLb:18, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.55},
   {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, cookHrFixed:2.5, restMin:60, panLb:10, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.72},
   {key:'tritip',  name:'Tri Tip',                    price:28.99, min:2, cookedLbPerPerson:0.23, cookHrFixed:2.5, restMin:60, limited:true, panLb:9, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.75}
@@ -563,7 +563,7 @@ const SIDES = [
   {key:'beans',       name:'Baked Beans',                 price:37.99, servesPerPan:22},
   {key:'coleslaw',    name:'Creamy Coleslaw',              price:45.99, servesPerPan:22},
   {key:'potatosalad', name:'Potato Salad',                 price:45.99, servesPerPan:22},
-  {key:'mac',         name:'Mac &amp; Cheese',             price:44.99, servesPerPan:22},
+  {key:'mac',         name:'Mac &amp; Cheese',             price:44.99, servesPerPan:38}, // baked ~3in deep in the 13x9 pan — more volume than the cold sides poured to a shallower fill; ~5oz portion, revisit if your actual scoop runs bigger/smaller
   {key:'smashed',     name:'Crispy Smashed Potatoes',       price:44.99, servesPerPan:10},
   {key:'caesar',      name:'Caesar Salad',                  price:47.99, servesPerPan:22}
 ];
@@ -708,7 +708,7 @@ const POTATO_SALAD_RECIPE = {
   costs: { boxLbPerBatch: () => priceBookRate('potatoSaladBox'), pansPerBatch: () => priceBookRate('aluminumPan') }
 };
 const MAC_RECIPE = {
-  batchServes: 22, // one pan/batch matches Mac & Cheese's existing 22-serving pan size
+  batchServes: 38, // one pan/batch = one 13x9 pan baked ~3in deep — ~194 fl oz of finished mac & cheese / ~5oz portion ≈ 38 servings
   macaroniOzPerBatch: 16, // large macaroni, 16 oz package
   eggsPerBatch: 3,
   evapMilkOzPerBatch: 12, // canned evaporated milk

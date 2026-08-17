@@ -68,6 +68,9 @@
   #formError{display:none;background:#F5E3DA;border-left:3px solid var(--warn);color:var(--warn);font-size:13px;padding:10px 12px;margin:14px 20px 0;border-radius:2px;}
 
   #quoteResult{display:none;}
+  .meat-summary{display:none;background:var(--paper-dark);border:1px solid var(--line);border-left:3px solid var(--ember);border-radius:2px;padding:12px 14px;margin-bottom:16px;}
+  .meat-summary .meat-summary-line{font-family:'Roboto Slab', serif;font-size:15.5px;font-weight:700;color:var(--char);}
+  .meat-summary .meat-summary-sub{font-size:11.5px;color:var(--smoke);margin-top:5px;line-height:1.5;}
   .quote-table{width:100%;border-collapse:collapse;font-size:14px;}
   .quote-table td{padding:9px 4px;border-bottom:1px dashed var(--line);}
   .quote-table td.amt{text-align:right;font-family:'IBM Plex Mono', monospace;white-space:nowrap;}
@@ -159,6 +162,7 @@
   <div class="card" id="quoteResult">
     <div class="card-head"><h2>Your Estimate</h2></div>
     <div class="card-body">
+      <div class="meat-summary" id="meatSummary"></div>
       <table class="quote-table" id="quoteTable"></table>
       <div class="note" id="quoteNote"></div>
     </div>
@@ -211,10 +215,11 @@ const RIBS = [
 ];
 const SIDES = [
   {key:'beans',       name:'Baked Beans',                price:37.99, servesPerPan:22},
-  {key:'coleslaw',    name:'Creamy Coleslaw',             price:29.99, servesPerPan:22},
-  {key:'potatosalad', name:'Potato Salad',                price:44.99, servesPerPan:22},
-  {key:'mac',         name:'Mac &amp; Cheese',            price:44.99, servesPerPan:22},
-  {key:'smashed',     name:'Crispy Smashed Potatoes',     price:44.99, servesPerPan:10}
+  {key:'coleslaw',    name:'Creamy Coleslaw',             price:45.99, servesPerPan:22},
+  {key:'potatosalad', name:'Potato Salad',                price:45.99, servesPerPan:22},
+  {key:'mac',         name:'Mac &amp; Cheese',            price:44.99, servesPerPan:38}, // baked ~3in thick, more per pan than the cold sides — kept in sync with the planner
+  {key:'smashed',     name:'Crispy Smashed Potatoes',     price:44.99, servesPerPan:10},
+  {key:'caesar',      name:'Caesar Salad',                price:47.99, servesPerPan:22}
 ];
 const BAKED_POTATO = {key:'bakedpotato', name:'Baked Potatoes (plain)', packPrice:20, packSize:6, ratePerPerson:1};
 const CORNBREAD = {key:'cornbread', name:'Cornbread', price:9.99, servesPerPan:9};
@@ -300,6 +305,8 @@ function calculateQuote(){
   const checkedKeys = []; // {key, exact} for every checked item — feeds the planner prefill link
   let total = 0;
   let anyChecked = false;
+  let meatLbs = 0;   // running total of cooked lbs across all by-the-pound meats + turkey (cooked-lb equivalent)
+  let ribRacks = 0;  // ribs are priced/ordered by the rack, not the lb, so tracked separately
   function exactVal(key){
     const v = document.getElementById('exact_'+key).value;
     return v ? Math.max(0, Math.round(parseFloat(v))) : null;
@@ -313,6 +320,7 @@ function calculateQuote(){
     const finalCookedLbs = exact!==null ? Math.max(exact, m.min) : Math.max(roundUp(m.cookedLbPerPerson*guests, 1), m.min);
     const cost = finalCookedLbs*m.price*MARKUP;
     total += cost;
+    meatLbs += finalCookedLbs;
     lineItems.push({name:m.name, amt:`${finalCookedLbs} lb`, cost});
   });
   TURKEYS.forEach(t=>{
@@ -325,6 +333,7 @@ function calculateQuote(){
     else { const rawBirds = (t.cookedLbPerPerson*guests)/(t.avgBirdLb*t.cookedYieldPct); birds = Math.max(1, Math.ceil(rawBirds)); }
     const cost = birds*t.price;
     total += cost;
+    meatLbs += birds*t.avgBirdLb*t.cookedYieldPct; // cooked-lb equivalent, so it's comparable to the by-the-pound meats
     lineItems.push({name:t.name, amt:`${birds} whole`, cost});
   });
   RIBS.forEach(r=>{
@@ -335,6 +344,7 @@ function calculateQuote(){
     const racks = exact!==null ? Math.max(1, exact) : Math.max(1, Math.ceil(r.racksPerPerson*guests));
     const cost = racks*r.fullPrice;
     total += cost;
+    ribRacks += racks;
     lineItems.push({name:r.name, amt:`${racks} racks`, cost});
   });
   SIDES.forEach(s=>{
@@ -403,7 +413,7 @@ function calculateQuote(){
     lineItems.push({name:'Full-Service Staffing', amt:`${guests} guests`, cost:fee});
   }
 
-  lastQuote = {guests, serviceMethod, address, eventDate, serveTime, eventName:document.getElementById('eventName').value.trim(), lineItems, total, deliveryFeeApplied:false, checkedKeys};
+  lastQuote = {guests, serviceMethod, address, eventDate, serveTime, eventName:document.getElementById('eventName').value.trim(), lineItems, total, deliveryFeeApplied:false, checkedKeys, meatLbs, ribRacks};
   renderQuote(lastQuote);
 
   if(serviceMethod==='delivery'){
@@ -415,6 +425,19 @@ function calculateQuote(){
 }
 
 function renderQuote(quote){
+  const meatEl = document.getElementById('meatSummary');
+  const meatLbsRounded = Math.round(quote.meatLbs);
+  if(meatLbsRounded > 0 || quote.ribRacks > 0){
+    let line = '';
+    if(meatLbsRounded > 0) line += `${meatLbsRounded} lb of meat`;
+    if(quote.ribRacks > 0) line += (line ? ' + ' : '') + `${quote.ribRacks} rack${quote.ribRacks>1?'s':''} of ribs`;
+    line += ` for ${quote.guests} guest${quote.guests!==1?'s':''}`;
+    const perGuestNote = meatLbsRounded > 0 ? ` — that's about ${(quote.meatLbs/quote.guests).toFixed(2)} lb of meat per guest.` : '';
+    meatEl.innerHTML = `<div class="meat-summary-line">${line}</div><div class="meat-summary-sub">${perGuestNote} Want more of one meat and less of another, or to trade a pan of a side for something else? Adjust the "exact" amounts on the menu above and hit "See My Price" again — nothing is locked in until you send the request.</div>`;
+    meatEl.style.display = 'block';
+  } else {
+    meatEl.style.display = 'none';
+  }
   let rows = quote.lineItems.map(li=>`<tr><td>${li.name}</td><td class="amt">${money(li.cost)}</td></tr>`).join('');
   rows += `<tr class="total"><td>Estimated Total</td><td class="amt">${money(quote.total)}</td></tr>`;
   document.getElementById('quoteTable').innerHTML = rows;

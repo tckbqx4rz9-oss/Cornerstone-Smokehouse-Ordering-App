@@ -2083,12 +2083,23 @@ function downloadICS(){
   if(!lastPlan) return;
   const plan = lastPlan;
   const evs = [];
+
+  // All grocery shopping happens in one trip, not once per meat — so instead of a separate
+  // "Purchase Meat & ..." event per two-day-prep item, add a single Grocery Shopping event
+  // sized to end right when the earliest item's own prep (dry brine / injection) needs to
+  // start, then drop the purchase wording from those per-item events below.
+  const day1Deadlines = plan.cookItems.filter(c=>c.twoDayPrep).map(c=>c.day1Start.getTime());
+  if(day1Deadlines.length){
+    const earliestDay1 = new Date(Math.min(...day1Deadlines));
+    evs.push({start:new Date(earliestDay1.getTime() - 90*60000), minutes:90, title:'Cornerstone: Grocery Shopping — buy all meat for the event'});
+  }
+
   plan.cookItems.forEach(c=>{
     if(c.twoDayPrep && c.prepStyle==='salt'){
-      evs.push({start:c.day1Start, minutes:60, title:`Cornerstone: Purchase Meat & Dry Brine ${c.name}`});
+      evs.push({start:c.day1Start, minutes:60, title:`Cornerstone: Dry Brine ${c.name}`});
       evs.push({start:c.day2Start, minutes:60, title:`Cornerstone: Rub ${c.name}`});
     } else if(c.twoDayPrep){
-      evs.push({start:c.day1Start, minutes:60, title:`Cornerstone: Purchase Meat & Dry Brine ${c.name}, make injection`});
+      evs.push({start:c.day1Start, minutes:60, title:`Cornerstone: Dry Brine ${c.name}, make injection`});
       evs.push({start:c.day2Start, minutes:60, title:`Cornerstone: Inject & rub ${c.name}`});
     } else {
       evs.push({start:c.prepStart, minutes:60, title:`Cornerstone: Trim & rub ${c.name}`});

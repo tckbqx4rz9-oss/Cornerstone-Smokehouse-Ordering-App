@@ -1546,12 +1546,22 @@ function renderTimeline(plan){
   // timeline: prep/cook/travel events by day, sorted chronologically
   let tl = '';
   const cookEvents = [];
+
+  // All grocery shopping happens in one trip, not once per meat — one consolidated Grocery
+  // Shopping entry, ending right before whichever item's own dry brine/injection prep needs
+  // to start first, instead of a separate "Purchase Meat & ..." entry per two-day-prep item.
+  const day1Deadlines = plan.cookItems.filter(c=>c.twoDayPrep).map(c=>c.day1Start.getTime());
+  if(day1Deadlines.length){
+    const earliestDay1 = new Date(Math.min(...day1Deadlines));
+    cookEvents.push({t:new Date(earliestDay1.getTime() - 90*60000), label:'Grocery Shopping — buy all meat for the event'});
+  }
+
   plan.cookItems.forEach(c=>{
     if(c.twoDayPrep && c.prepStyle==='salt'){
-      cookEvents.push({t:c.day1Start, label:`Purchase Meat &amp; Dry Brine ${c.name}`});
+      cookEvents.push({t:c.day1Start, label:`Dry Brine ${c.name}`});
       cookEvents.push({t:c.day2Start, label:`Rub ${c.name}`});
     } else if(c.twoDayPrep){
-      cookEvents.push({t:c.day1Start, label:`Purchase Meat &amp; Dry Brine ${c.name}, make injection`});
+      cookEvents.push({t:c.day1Start, label:`Dry Brine ${c.name}, make injection`});
       cookEvents.push({t:c.day2Start, label:`Inject &amp; rub ${c.name}`});
     } else {
       cookEvents.push({t:c.prepStart, label:`Trim &amp; rub ${c.name}`});

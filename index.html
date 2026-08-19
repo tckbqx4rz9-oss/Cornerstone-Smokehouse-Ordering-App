@@ -265,12 +265,15 @@
 
   ul.shop-list{list-style:none;margin:0;padding:0;}
   ul.shop-list li{
-    display:flex;justify-content:space-between;
+    display:flex;align-items:center;gap:10px;
     padding:8px 0;border-bottom:1px dashed var(--line);
     font-size:14px;
   }
   ul.shop-list li:last-child{border-bottom:none;}
-  ul.shop-list li span:last-child{font-family:'IBM Plex Mono', monospace;font-weight:600;}
+  ul.shop-list li span:last-child{font-family:'IBM Plex Mono', monospace;font-weight:600;margin-left:auto;}
+  ul.shop-list li input.shop-check-box{width:16px;height:16px;flex-shrink:0;accent-color:var(--ember);cursor:pointer;}
+  ul.shop-list li.shop-checked{opacity:0.45;}
+  ul.shop-list li.shop-checked span:first-child{text-decoration:line-through;}
   .shop-cat{
     font-family:'IBM Plex Mono', monospace;
     font-size:10.5px;letter-spacing:1.5px;text-transform:uppercase;
@@ -545,7 +548,7 @@
 const MEATS = [
   {key:'brisket', name:'Texas-Style Beef Brisket', price:30.99, min:6, cookedLbPerPerson:0.20, avgPieceLb:16, cookHrPerLb:22/18, restMin:75, panLb:16, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.50}, // avgPieceLb corrected to the real ~16lb wet weight; cookHrPerLb rate left as-is (still ~1.22hr/lb), so total smoke time scales down proportionally to ~19.6hr instead of 22hr
   {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, avgPieceLb:18, cookHrPerLb:18/18, restMin:60, panLb:18, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.55},
-  {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, cookHrFixed:2.5, restMin:60, panLb:10, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.72},
+  {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, cookHrFixed:2.5, restMin:60, panLb:10, twoDayPrep:true, prepStyle:'inject-only', cookedYieldPct:0.72}, // chicken doesn't get dry brined like brisket/pork/tri tip — Day 1 is just making the injection
   {key:'tritip',  name:'Tri Tip',                    price:28.99, min:2, cookedLbPerPerson:0.23, cookHrFixed:2.5, restMin:60, limited:true, panLb:9, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.75}
 ];
 const RACKS_PER_PAN = 2;
@@ -1560,6 +1563,9 @@ function renderTimeline(plan){
     if(c.twoDayPrep && c.prepStyle==='salt'){
       cookEvents.push({t:c.day1Start, label:`Dry Brine ${c.name}`});
       cookEvents.push({t:c.day2Start, label:`Rub ${c.name}`});
+    } else if(c.twoDayPrep && c.prepStyle==='inject-only'){
+      cookEvents.push({t:c.day1Start, label:`Make injection for ${c.name}`});
+      cookEvents.push({t:c.day2Start, label:`Inject &amp; rub ${c.name}`});
     } else if(c.twoDayPrep){
       cookEvents.push({t:c.day1Start, label:`Dry Brine ${c.name}, make injection`});
       cookEvents.push({t:c.day2Start, label:`Inject &amp; rub ${c.name}`});
@@ -1754,7 +1760,61 @@ function renderResults(plan){
   sh += `<li><span>Nitrile gloves, box</span><span>1 box</span></li>`;
   sh += `<li><span>Propane (check tank level)</span><span>Top off</span></li>`;
   sh += `</ul>`;
+  sh = `<div class="note" style="margin-top:0;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><span>Check items off as you shop — they'll stay checked if you come back to this ticket.</span><button type="button" class="secondary" style="width:auto;flex-shrink:0;padding:6px 12px;font-size:11px;" onclick="resetShopChecklist('${plan.orderNum}')">Reset Checklist</button></div>` + sh;
   document.getElementById('shopBody').innerHTML = sh;
+  decorateShopList(plan.orderNum);
+}
+
+// Checking off shopping-list items while shopping — checkbox state persists in
+// localStorage per order number, so it survives a page refresh but a new/rebuilt
+// order starts with a fresh, unchecked list. Keyed by category + label + position
+// within that category, since a few ingredient labels (like "Eggs") repeat across
+// different recipe sections and would otherwise collide on a bare label key.
+function shopCheckedKey(orderNum){ return `shop-checked-${orderNum}`; }
+function loadShopChecked(orderNum){
+  try {
+    const raw = localStorage.getItem(shopCheckedKey(orderNum));
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch(err){ return new Set(); }
+}
+function saveShopChecked(orderNum, set){
+  try { localStorage.setItem(shopCheckedKey(orderNum), JSON.stringify(Array.from(set))); } catch(err){}
+}
+function toggleShopItem(orderNum, key, checked){
+  const set = loadShopChecked(orderNum);
+  if(checked) set.add(key); else set.delete(key);
+  saveShopChecked(orderNum, set);
+}
+function resetShopChecklist(orderNum){
+  if(!confirm('Uncheck everything on this shopping list?')) return;
+  try { localStorage.removeItem(shopCheckedKey(orderNum)); } catch(err){}
+  document.querySelectorAll('#shopBody .shop-check-box').forEach(cb=>{ cb.checked = false; });
+  document.querySelectorAll('#shopBody .shop-list li.shop-checked').forEach(li=>li.classList.remove('shop-checked'));
+}
+function decorateShopList(orderNum){
+  const checkedSet = loadShopChecked(orderNum);
+  const container = document.getElementById('shopBody');
+  container.querySelectorAll('.shop-cat').forEach(catEl=>{
+    const catName = catEl.textContent.trim();
+    const list = catEl.nextElementSibling;
+    if(!list || !list.classList.contains('shop-list')) return;
+    Array.from(list.children).forEach((li, idx)=>{
+      const labelSpan = li.querySelector('span');
+      const label = labelSpan ? labelSpan.textContent.trim() : `item-${idx}`;
+      const key = `${catName}||${label}||${idx}`;
+      const checked = checkedSet.has(key);
+      if(checked) li.classList.add('shop-checked');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'shop-check-box';
+      cb.checked = checked;
+      cb.addEventListener('change', ()=>{
+        toggleShopItem(orderNum, key, cb.checked);
+        li.classList.toggle('shop-checked', cb.checked);
+      });
+      li.insertBefore(cb, li.firstChild);
+    });
+  });
 }
 
 /* ---------- post-event tracker (uses artifact persistent storage) ---------- */
@@ -2108,6 +2168,9 @@ function downloadICS(){
     if(c.twoDayPrep && c.prepStyle==='salt'){
       evs.push({start:c.day1Start, minutes:60, title:`Cornerstone: Dry Brine ${c.name}`});
       evs.push({start:c.day2Start, minutes:60, title:`Cornerstone: Rub ${c.name}`});
+    } else if(c.twoDayPrep && c.prepStyle==='inject-only'){
+      evs.push({start:c.day1Start, minutes:60, title:`Cornerstone: Make injection for ${c.name}`});
+      evs.push({start:c.day2Start, minutes:60, title:`Cornerstone: Inject & rub ${c.name}`});
     } else if(c.twoDayPrep){
       evs.push({start:c.day1Start, minutes:60, title:`Cornerstone: Dry Brine ${c.name}, make injection`});
       evs.push({start:c.day2Start, minutes:60, title:`Cornerstone: Inject & rub ${c.name}`});

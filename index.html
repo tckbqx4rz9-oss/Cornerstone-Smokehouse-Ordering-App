@@ -534,6 +534,14 @@
       <div class="ticket-body" id="foodCostBody"></div>
     </div>
 
+    <div class="ticket no-print" id="meatCostTicket" style="display:none;">
+      <div class="ticket-head">
+        <div><h2>Meat Cost Analysis</h2><div class="ticket-sub">Internal only — true raw purchase cost vs. what you charge, for by-the-pound meats</div></div>
+        <span class="num">16</span>
+      </div>
+      <div class="ticket-body" id="meatCostBody"></div>
+    </div>
+
     <div class="actions">
       <button class="secondary" onclick="downloadICS()">Add Timeline To Apple Calendar (with alerts)</button>
       <button class="secondary" onclick="printInvoice()">Print / Save Invoice as PDF</button>
@@ -552,6 +560,15 @@ const MEATS = [
   {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, cookHrFixed:2.5, restMin:60, panLb:10, twoDayPrep:true, prepStyle:'inject-only', cookedYieldPct:0.72}, // chicken doesn't get dry brined like brisket/pork/tri tip — Day 1 is just making the injection
   {key:'tritip',  name:'Tri Tip',                    price:28.99, min:2, cookedLbPerPerson:0.23, cookHrFixed:2.5, restMin:60, limited:true, panLb:9, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.75}
 ];
+// Maps each MEATS key to its raw (as-purchased) cost source in PRICE_BOOK, for Meat
+// Cost Analysis below. null = no real $/lb purchase cost tracked yet — shows as "not
+// priced yet" until a receipt scan (or a size for chickenBreastCase) fills it in.
+const MEAT_RAW_COST_KEY = {
+  brisket: 'brisketWhole',
+  pork: 'porkButt',
+  chicken: null, // chickenBreastCase in PRICE_BOOK is priced per case, not per lb — need the case weight (lb) to convert to a $/lb rate
+  tritip: null   // no purchase price tracked yet — scan a receipt to fill this in
+};
 const RACKS_PER_PAN = 2;
 const TURKEYS = [
   {key:'turkey', name:'Whole Smoked Turkey', price:110, avgBirdLb:13.5, cookedLbPerPerson:0.16, cookedYieldPct:0.45, restMin:60, twoDayPrep:true, prepStyle:'inject', cookMethod:'smoker', smokeHours:6.5},
@@ -649,7 +666,15 @@ const PRICE_BOOK = {
   appleJuice:       { label:"Great Value Frozen Apple Juice Concentrate (12floz can)", price:1.86, size:1, unit:'can' },
   iceBag:           { label:"Reddy Ice (5-10lb small bag)", price:2.33, size:1, unit:'bag' },
   fryingOil:        { label:"Harvest Value Clear Vegetable Frying Oil (35lb jug)", price:41.79, size:1, unit:'jug' },
-  woodChips:        { label:"Western Premium BBQ Mesquite Smoking Chips (180 cu in bag)", price:4.86, size:1, unit:'bag' }
+  woodChips:        { label:"Western Premium BBQ Mesquite Smoking Chips (180 cu in bag)", price:4.86, size:1, unit:'bag' },
+  // Proteins — tracked here so the receipt scanner can recognize/log meat purchases
+  // (price history + Quicken export) just like every other ingredient. Not read by
+  // any recipe cost formula — MEATS above prices meat by the per-person sell rate,
+  // not by raw purchase cost, so these are for price tracking only, not costing.
+  // Seeded from an actual Chef'Store receipt — update via a future scan as usual.
+  porkButt:         { label:"Pork Boston Butt, bone-in (Celaya)", price:2.19, size:1, unit:'lb' },
+  brisketWhole:     { label:"Beef Brisket, Whole/Full", price:5.59, size:1, unit:'lb' },
+  chickenBreastCase:{ label:"Chicken Breast, Single Random Weight (case)", price:22.39, size:1, unit:'case' }
 };
 
 const CUP = { tsp:48, tbsp:16, floz:8, cup:1 }; // units of X per 1 cup — used to convert between volume units
@@ -1067,6 +1092,7 @@ function doRunCalc(){
   const cookItems = []; // things that need a smoker timeline entry
   const lineItems = []; // things that show up in the order/cost table
   const recipeItems = []; // made-from-scratch items with real ingredient/prep tracking (e.g. smashed potatoes)
+  const meatCostItems = []; // by-the-pound meats: true raw purchase cost vs. what's charged, for Meat Cost Analysis
   const trackItems = []; // {key, ordered} for every checked item — feeds the post-event leftover tracker
   let orderTotal = 0;
   let meatPans = 0;  // full pans needed to hold the ordered meat/turkey/ribs
@@ -1105,6 +1131,16 @@ function doRunCalc(){
     rubMeatLb += buyLbs;
     smokedMeatTypesCount++;
     trackItems.push({key:m.key, ordered:buyLbs});
+
+    const rawKey = MEAT_RAW_COST_KEY[m.key];
+    const rawRate = rawKey ? priceBookRate(rawKey, 'lb') : null; // $ per raw/as-purchased lb
+    const rawCostKnown = rawRate !== null && rawRate !== undefined;
+    meatCostItems.push({
+      name: m.name, buyLbs, finalCookedLbs,
+      sellCost: cost,
+      rawCost: rawCostKnown ? buyLbs*rawRate : 0,
+      rawCostKnown
+    });
   });
 
   // turkey
@@ -1571,7 +1607,7 @@ function doRunCalc(){
     };
   }
 
-  lastPlan = {guests, serveDT, plateBuffer, setupBuffer, jobsiteAddress, serviceMethod, deliveryFeeApplied:false, lineItems, cookItems, recipeItems, trackItems, shopLines, orderTotal, meatPans, sidePans, travel:null, categoryWarnings, invoiceNum:null, orderNum:nextOrderNumber(), rubInfo, turkeySeasoningInfo, turkeyOilInfo, woodChipsInfo};
+  lastPlan = {guests, serveDT, plateBuffer, setupBuffer, jobsiteAddress, serviceMethod, deliveryFeeApplied:false, lineItems, cookItems, recipeItems, meatCostItems, trackItems, shopLines, orderTotal, meatPans, sidePans, travel:null, categoryWarnings, invoiceNum:null, orderNum:nextOrderNumber(), rubInfo, turkeySeasoningInfo, turkeyOilInfo, woodChipsInfo};
   renderResults(lastPlan);
   document.getElementById('results').style.display='block';
   document.getElementById('results').scrollIntoView({behavior:'smooth'});
@@ -1686,6 +1722,7 @@ function renderResults(plan){
   renderTracker(plan);
   renderInvoice(plan);
   renderFoodCost(plan);
+  renderMeatCost(plan);
 
   // shopping / prep list
   let sh = '';
@@ -1896,6 +1933,51 @@ function renderFoodCost(plan){
   html += `</tbody></table>`;
   if(anyPartial){
     html += `<div class="note">Some ingredients don't have a cost entered yet, so those items' true cost is higher than shown and margin is lower than shown. Give me pricing for the remaining ingredients and these numbers will fill in.</div>`;
+  }
+  body.innerHTML = html;
+}
+
+// True raw purchase cost vs. what's charged, for by-the-pound meats — parallel to
+// renderFoodCost() above but for MEATS instead of made-from-scratch sides. A meat
+// with no tracked $/lb purchase cost yet (see MEAT_RAW_COST_KEY) shows as "not
+// tracked yet" and is left out of the total rather than shown as pure margin.
+function renderMeatCost(plan){
+  const ticket = document.getElementById('meatCostTicket');
+  const body = document.getElementById('meatCostBody');
+  if(!plan.meatCostItems.length){
+    ticket.style.display = 'none';
+    return;
+  }
+  ticket.style.display = '';
+  let html = `<table class="qty-table"><thead><tr><th>Item</th><th>Sell Price</th><th>Raw Cost</th><th>Margin</th></tr></thead><tbody>`;
+  let totalSell = 0, totalCost = 0, anyUnknown = false;
+  plan.meatCostItems.forEach(r=>{
+    if(!r.rawCostKnown){
+      anyUnknown = true;
+      html += `<tr>
+        <td>${r.name}<div class="item-sub" style="color:var(--smoke);">Raw cost not tracked yet — scan a receipt to fill this in</div></td>
+        <td class="amt">${money(r.sellCost)}</td>
+        <td class="amt">—</td>
+        <td class="amt">—</td>
+      </tr>`;
+      return;
+    }
+    totalSell += r.sellCost;
+    totalCost += r.rawCost;
+    const margin = r.sellCost - r.rawCost;
+    const marginPct = r.sellCost>0 ? (margin/r.sellCost*100) : 0;
+    html += `<tr>
+      <td>${r.name}<div class="item-sub">${r.buyLbs} lb purchased for ${r.finalCookedLbs} lb cooked/served</div></td>
+      <td class="amt">${money(r.sellCost)}</td>
+      <td class="amt">${money(r.rawCost)}</td>
+      <td class="amt" style="color:${margin>=0?'var(--good)':'var(--warn)'};">${money(margin)} (${marginPct.toFixed(0)}%)</td>
+    </tr>`;
+  });
+  const totalMargin = totalSell - totalCost;
+  html += `<tr class="total"><td>Total${anyUnknown?' (priced items only)':''}</td><td class="amt">${money(totalSell)}</td><td class="amt">${money(totalCost)}</td><td class="amt">${money(totalMargin)}</td></tr>`;
+  html += `</tbody></table>`;
+  if(anyUnknown){
+    html += `<div class="note">Some meats don't have a raw purchase cost tracked yet, so they're left out of the total above. Scan a receipt (or give me the case weight for chicken breast) and these will fill in.</div>`;
   }
   body.innerHTML = html;
 }

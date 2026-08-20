@@ -774,6 +774,8 @@ const MAC_RECIPE = {
   cheddarCupPerBatch: 2, // shredded medium cheddar (Tillamook)
   prepMin: 20, // cook macaroni, mix filling, assemble pan
   cookMin: 45, // bake at 350°F to 165° internal
+  bakeAhead: true, // baked the day before, reheated on serve day (oven can't run two things at once)
+  reheatMin: 30,
   costs: {
     macaroniOzPerBatch: () => priceBookRate('macaroni'),
     eggsPerBatch: () => priceBookRate('eggs'),
@@ -797,6 +799,8 @@ const CORNBREAD_RECIPE = {
   creamedCornCupPerBatch: 0.75, // direct swap for the corn kernels originally in the recipe
   prepMin: 10, // whisk wet, stir in dry, fold in corn, pour
   cookMin: 25, // bake to 190°F internal — cookie sheet runs ~18-22 min, 9x13 runs ~22-28 min
+  bakeAhead: true, // baked the day before, reheated on serve day (oven can't run two things at once)
+  reheatMin: 15,
   costs: {
     mixLbPerBatch: () => priceBookRate('cornbreadMix'),
     buttermilkCupPerBatch: () => priceBookRate('buttermilk','cup'),
@@ -819,6 +823,8 @@ const ROLLS_RECIPE = {
   coatMin: 15, // Day 2: melt butter, mix in cheese/garlic, roll each roll in butter mixture
   riseMin: 120, // let rise ~2 hr or until doubled
   bakeMin: 15, // bake at 375°F — recipe says 13 min but notes it can run past 20
+  bakeAhead: true, // baked the day before, reheated on serve day (oven can't run two things at once)
+  reheatMin: 10,
   costs: {
     bagsPerBatch: () => priceBookRate('rollsBag'),
     parmesanCupPerBatch: () => priceBookRate('parmesan','cup'),
@@ -1315,7 +1321,8 @@ function doRunCalc(){
         pepperTsp: r.pepperTspPerBatch*batches,
         velveetaOz: r.velveetaOzPerBatch*batches,
         cheddarCup: r.cheddarCupPerBatch*batches,
-        prepMin: r.prepMin, cookMin: r.cookMin
+        prepMin: r.prepMin, cookMin: r.cookMin,
+        bakeAhead: r.bakeAhead, reheatMin: r.reheatMin
       });
     }
   });
@@ -1373,7 +1380,8 @@ function doRunCalc(){
       oilTbsp: cbR.oilTbspPerBatch*cbBatches,
       honeyPowderTbsp: cbR.honeyPowderTbspPerBatch*cbBatches,
       creamedCornCup: cbR.creamedCornCupPerBatch*cbBatches,
-      prepMin: cbR.prepMin, cookMin: cbR.cookMin
+      prepMin: cbR.prepMin, cookMin: cbR.cookMin,
+      bakeAhead: cbR.bakeAhead, reheatMin: cbR.reheatMin
     });
   }
   BREAD.forEach(b=>{
@@ -1414,7 +1422,8 @@ function doRunCalc(){
         overnightMin: r.overnightMin,
         coatMin: r.coatMin, riseMin: r.riseMin, bakeMin: r.bakeMin,
         prepMin: r.coatMin, // only the hands-on coating step blocks other same-day prep
-        cookMin: r.riseMin + r.bakeMin // rise + bake both run unattended, back-to-back
+        cookMin: r.riseMin + r.bakeMin, // rise + bake both run unattended, back-to-back
+        bakeAhead: r.bakeAhead, reheatMin: r.reheatMin
       });
     }
   });
@@ -1470,10 +1479,60 @@ function doRunCalc(){
     r.roastEnd = new Date(serveDT.getTime() - plateBuffer*60000);
     r.roastStart = new Date(r.roastEnd.getTime() - r.cookMin*60000);
     r.prepStart = new Date(r.roastStart.getTime() - r.prepMin*60000);
+    if(r.bakeAhead){
+      // Baked the day before instead of fresh same-day: reheating on the event day stands in
+      // for a fresh bake, so shift the whole mix/bake window back 24 hours.
+      r.reheatEnd = r.roastEnd;
+      r.reheatStart = new Date(r.reheatEnd.getTime() - r.reheatMin*60000);
+      r.roastEnd = new Date(r.roastEnd.getTime() - 24*3600000);
+      r.roastStart = new Date(r.roastStart.getTime() - 24*3600000);
+      r.prepStart = new Date(r.prepStart.getTime() - 24*3600000);
+    }
     if(r.overnightPrep){
+      // Computed from prepStart AFTER any bake-ahead shift above, so rolls' overnight thaw
+      // lands a further day earlier than the (now day-before-serve) bake step — e.g. thaw two
+      // days out, bake the day before, reheat day-of — matching the real-world order.
       r.day1Start = new Date(r.prepStart.getTime() - 24*3600000);
     }
   });
+
+  // Bake-ahead items (mac & cheese, cornbread, dinner rolls) all need oven time on the same
+  // day — the day before the event — and only one thing can be in the oven at once. Stagger
+  // their bake windows so they don't overlap, and keep them inside daylight hours so nothing
+  // is scheduled to bake at 2am. This is a separate constrained resource (the oven, day-before)
+  // from the same-day "hands" staggering below.
+  const BAKE_DAYLIGHT_START_HOUR = 8;
+  const BAKE_DAYLIGHT_END_HOUR = 18;
+  function clampToDaylight(start, durationMin){
+    // Only pushes a start forward to the 8am floor — never pulls it earlier. Earlier bake-ahead
+    // items in the sequence already claimed their oven time, so pulling this one's start earlier
+    // to "fit before 6pm" would silently overlap them. If it still runs past 6pm, that's a real
+    // conflict to flag, not something to paper over by rewinding the clock.
+    const dayStart = new Date(start); dayStart.setHours(BAKE_DAYLIGHT_START_HOUR,0,0,0);
+    const dayEnd = new Date(start); dayEnd.setHours(BAKE_DAYLIGHT_END_HOUR,0,0,0);
+    const s = start < dayStart ? dayStart : start;
+    const e = new Date(s.getTime() + durationMin*60000);
+    return {start:s, conflict: e > dayEnd};
+  }
+  let bakeAheadConflict = false;
+  const bakeAheadItems = recipeItems.filter(r=>r.bakeAhead);
+  if(bakeAheadItems.length){
+    // Once an item is bake-ahead its old serve-anchored natural time is meaningless — it just
+    // needs to happen sometime the day before. Pack items back-to-back starting at 8am (menu
+    // order) instead of anchoring off natural times, so the whole daylight window is available
+    // rather than wasting the morning and forcing a false conflict.
+    let bakeCursor = new Date(bakeAheadItems[0].prepStart);
+    bakeCursor.setHours(BAKE_DAYLIGHT_START_HOUR, 0, 0, 0);
+    bakeAheadItems.forEach(r=>{
+      const duration = r.prepMin + r.cookMin;
+      const clamped = clampToDaylight(bakeCursor, duration);
+      if(clamped.conflict) bakeAheadConflict = true;
+      r.prepStart = clamped.start;
+      r.roastStart = new Date(r.prepStart.getTime() + r.prepMin*60000);
+      r.roastEnd = new Date(clamped.start.getTime() + duration*60000);
+      bakeCursor = r.roastEnd;
+    });
+  }
 
   // One cook has two hands: hands-on prep tasks (trimming, brining, rubbing, boiling/smashing)
   // can't happen at the same moment for two items even though each item's cook/smoker time
@@ -1511,7 +1570,7 @@ function doRunCalc(){
   cookItems.forEach(c=>{
     finalDayTasks.push({naturalStart: c.twoDayPrep ? c.day2Start : c.prepStart, durationMin:60, item:c, twoDay:c.twoDayPrep});
   });
-  recipeItems.forEach(r=>{
+  recipeItems.filter(r=>!r.bakeAhead).forEach(r=>{
     finalDayTasks.push({naturalStart:r.prepStart, durationMin:r.prepMin, item:r, isRecipe:true});
   });
   finalDayTasks.sort((a,b)=>a.naturalStart-b.naturalStart);
@@ -1551,6 +1610,10 @@ function doRunCalc(){
 
   if(prepConflict){
     categoryWarnings.push(`Heads up — there isn't quite enough back-to-back time to hand-prep everything before it needs to go on. Consider an earlier serve time, less to prep same-day, or an extra set of hands.`);
+  }
+
+  if(bakeAheadConflict){
+    categoryWarnings.push(`Heads up — there isn't enough daylight (8am–6pm) the day before to bake everything ahead without overlapping in the oven. Consider fewer bake-ahead items, an earlier start the day before, or splitting across two ovens.`);
   }
 
   let rubInfo = null;
@@ -1683,6 +1746,9 @@ function renderTimeline(plan){
     } else {
       cookEvents.push({t:r.prepStart, label:`Boil, dry &amp; smash ${r.name} (${r.batches} batch${r.batches>1?'es':''})`});
       cookEvents.push({t:r.roastStart, label:`Roast ${r.name} (${r.cookMin} min, ${r.sheetPans} sheet pan${r.sheetPans>1?'s':''})`});
+    }
+    if(r.bakeAhead){
+      cookEvents.push({t:r.reheatStart, label:`Reheat ${r.name} in the oven (${r.reheatMin} min) — baked the day before`});
     }
   });
   if(plan.travel){
@@ -2342,6 +2408,9 @@ function downloadICS(){
     } else {
       evs.push({start:r.prepStart, minutes:r.prepMin, title:`Cornerstone: Boil, dry & smash ${r.name}`});
       evs.push({start:r.roastStart, minutes:r.cookMin, title:`Cornerstone: Roast ${r.name}`});
+    }
+    if(r.bakeAhead){
+      evs.push({start:r.reheatStart, minutes:r.reheatMin, title:`Cornerstone: Reheat ${r.name} (baked the day before)`});
     }
   });
   if(plan.travel){

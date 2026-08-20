@@ -672,7 +672,7 @@ const PRICE_BOOK = {
   // any recipe cost formula — MEATS above prices meat by the per-person sell rate,
   // not by raw purchase cost, so these are for price tracking only, not costing.
   // Seeded from an actual Chef'Store receipt — update via a future scan as usual.
-  porkButt:         { label:"Pork Boston Butt, bone-in (Celaya)", price:2.19, size:1, unit:'lb' },
+  porkButt:         { label:"Pork Boston Butt, boneless (Celaya)", price:2.19, size:1, unit:'lb' },
   brisketWhole:     { label:"Beef Brisket, Whole/Full", price:5.59, size:1, unit:'lb' },
   chickenBreastCase:{ label:"Chicken Breast, Single Random Weight (case)", price:22.39, size:1, unit:'case' }
 };
@@ -2851,10 +2851,31 @@ function onReceiptFieldChange(i){
   if(!row) return;
   const qtyEl = document.getElementById(`rcpt_qty_${i}`); if(qtyEl) row.qty = parseFloat(qtyEl.value);
   const priceEl = document.getElementById(`rcpt_price_${i}`); if(priceEl) row.price = parseFloat(priceEl.value);
+  const subtotalEl = document.getElementById(`rcpt_subtotal_${i}`); if(subtotalEl) row.subtotal = parseFloat(subtotalEl.value);
+  const discountEl = document.getElementById(`rcpt_discount_${i}`); if(discountEl) row.discount = parseFloat(discountEl.value);
   const sizeEl = document.getElementById(`rcpt_size_${i}`); if(sizeEl) row.size = parseFloat(sizeEl.value);
   const unitEl = document.getElementById(`rcpt_unit_${i}`); if(unitEl) row.unit = unitEl.value;
   const newNameEl = document.getElementById(`rcpt_newname_${i}`); if(newNameEl) row.newName = newNameEl.value;
   const applyEl = document.getElementById(`rcpt_apply_${i}`); if(applyEl) row.apply = applyEl.checked;
+}
+// When Subtotal (the exact pre-discount dollar amount the register charged for this line)
+// is filled in alongside Price, back-calculates a more precise Quantity than whatever
+// rounded weight is printed on the receipt — e.g. a receipt showing "21.0 lb" printed but
+// actually billed off a scale-precise 21.04 lb. Recalculates on every keystroke in either
+// Price or Subtotal so they stay consistent; doesn't touch Quantity if you're the one typing
+// directly into it. Purely a display update — onReceiptFieldChange persists it on blur.
+function updateReceiptRowFromSubtotal(i){
+  const subtotalEl = document.getElementById(`rcpt_subtotal_${i}`);
+  const priceEl = document.getElementById(`rcpt_price_${i}`);
+  const qtyEl = document.getElementById(`rcpt_qty_${i}`);
+  if(subtotalEl && priceEl && qtyEl){
+    const subtotal = parseFloat(subtotalEl.value);
+    const price = parseFloat(priceEl.value);
+    if(isFinite(subtotal) && subtotal > 0 && isFinite(price) && price > 0){
+      qtyEl.value = (subtotal / price).toFixed(2);
+    }
+  }
+  updateReceiptRowTotal(i);
 }
 // Live-updates the "Total this line" readout as you type in Quantity or Price paid —
 // doesn't touch receiptRows state (onReceiptFieldChange does that on blur/change), this
@@ -2862,16 +2883,28 @@ function onReceiptFieldChange(i){
 function updateReceiptRowTotal(i){
   const priceEl = document.getElementById(`rcpt_price_${i}`);
   const qtyEl = document.getElementById(`rcpt_qty_${i}`);
+  const discountEl = document.getElementById(`rcpt_discount_${i}`);
   const totalEl = document.getElementById(`rcpt_total_line_${i}`);
   if(!priceEl || !qtyEl || !totalEl) return;
   const price = parseFloat(priceEl.value);
   const qty = parseFloat(qtyEl.value);
-  totalEl.textContent = (isFinite(price) && isFinite(qty)) ? `Total this line: ${money(price*qty)}` : 'Total this line: —';
+  const discount = discountEl ? parseFloat(discountEl.value) : NaN;
+  if(!isFinite(price) || !isFinite(qty)){ totalEl.textContent = 'Total this line: —'; return; }
+  const hasDiscount = isFinite(discount) && discount > 0;
+  const netTotal = Math.max(0, price*qty - (hasDiscount ? discount : 0));
+  totalEl.textContent = hasDiscount ? `Total this line after discount: ${money(netTotal)}` : `Total this line: ${money(netTotal)}`;
 }
 function receiptRowHtml(row, i){
   const qtyNum = isFinite(row.qty) ? row.qty : 1;
   const priceNum = isFinite(row.price) ? row.price : NaN;
-  const lineTotalText = (isFinite(priceNum) && isFinite(qtyNum)) ? `Total this line: ${money(priceNum*qtyNum)}` : 'Total this line: —';
+  const discountNum = isFinite(row.discount) && row.discount > 0 ? row.discount : 0;
+  let lineTotalText = 'Total this line: —';
+  if(isFinite(priceNum) && isFinite(qtyNum)){
+    const netTotal = Math.max(0, priceNum*qtyNum - discountNum);
+    lineTotalText = discountNum > 0
+      ? `Total this line after discount: ${money(netTotal)}`
+      : `Total this line: ${money(netTotal)}`;
+  }
   return `
     <div class="field" style="border-top:3px solid var(--iron);padding-top:14px;margin-top:16px;" data-row="${i}">
       <div class="grid2" style="align-items:end;">
@@ -2889,8 +2922,17 @@ function receiptRowHtml(row, i){
         </div>
         <div class="field">
           <label>Price paid (per unit/lb)</label>
-          <input type="number" step="0.01" id="rcpt_price_${i}" value="${isFinite(priceNum) ? priceNum.toFixed(2) : ''}" oninput="updateReceiptRowTotal(${i})" onchange="onReceiptFieldChange(${i})">
+          <input type="number" step="0.01" id="rcpt_price_${i}" value="${isFinite(priceNum) ? priceNum.toFixed(2) : ''}" oninput="updateReceiptRowFromSubtotal(${i})" onchange="onReceiptFieldChange(${i})">
         </div>
+      </div>
+      <div class="field">
+        <label>Subtotal for this line, before discount (optional — if the receipt shows it, this is more precise than a rounded printed weight)</label>
+        <input type="number" step="0.01" min="0" id="rcpt_subtotal_${i}" value="${isFinite(row.subtotal) && row.subtotal ? row.subtotal.toFixed(2) : ''}" oninput="updateReceiptRowFromSubtotal(${i})" onchange="onReceiptFieldChange(${i})" placeholder="e.g. 117.61">
+        <div class="item-sub">If you fill this in, Quantity above is recalculated from Subtotal ÷ Price so it matches what the register actually charged, not just what's printed as the weight.</div>
+      </div>
+      <div class="field">
+        <label>Discount on this line (if the store knocked off a lump sum — $ off the total, not per unit)</label>
+        <input type="number" step="0.01" min="0" id="rcpt_discount_${i}" value="${discountNum ? discountNum.toFixed(2) : ''}" oninput="updateReceiptRowTotal(${i})" onchange="onReceiptFieldChange(${i})" placeholder="e.g. 5.00">
       </div>
       <div class="item-sub" id="rcpt_total_line_${i}" style="margin:-6px 0 10px;">${lineTotalText}</div>
       <div class="field">
@@ -2925,7 +2967,7 @@ function renderReceiptRows(){
     : `<div class="note">No line items yet — use "+ Add Item" below, or scan a receipt photo.</div>`;
 }
 function addReceiptRow(){
-  receiptRows.push({originalText:'', text:'', price:NaN, qty:1, matchValue:'', size:1, unit:'ea', newName:'', apply:false, userPickedMatch:false, fromAlias:false});
+  receiptRows.push({originalText:'', text:'', price:NaN, qty:1, subtotal:NaN, discount:NaN, matchValue:'', size:1, unit:'ea', newName:'', apply:false, userPickedMatch:false, fromAlias:false});
   renderReceiptRows();
   const el = document.getElementById(`rcpt_text_${receiptRows.length - 1}`);
   if(el) el.focus();
@@ -2950,6 +2992,8 @@ function renderReceiptReview(parsed, photoBlob){
       text: it.itemText,
       price: it.price,
       qty: (it.qty!=null && isFinite(it.qty) && it.qty>0) ? it.qty : 1,
+      subtotal: NaN, // exact pre-discount line total, if known — always entered by hand, never OCR'd
+      discount: NaN, // receipts never print a per-line lump-sum discount in a parseable spot — always entered by hand
       matchValue: match ? `${match.catalog==='ingredient'?'ing':'sup'}:${match.id}` : '',
       size: catalogEntry ? catalogEntry.size : 1,
       unit: catalogEntry ? catalogEntry.unit : 'ea',
@@ -3022,6 +3066,8 @@ async function confirmReceiptSave(){
     const newName = isNewSupply ? (document.getElementById(`rcpt_newname_${i}`).value || '').trim() : '';
     const qty = parseFloat(document.getElementById(`rcpt_qty_${i}`).value);
     const price = parseFloat(document.getElementById(`rcpt_price_${i}`).value);
+    const discountEl = document.getElementById(`rcpt_discount_${i}`);
+    const discount = discountEl ? parseFloat(discountEl.value) : NaN;
     const size = parseFloat(document.getElementById(`rcpt_size_${i}`).value);
     const unit = document.getElementById(`rcpt_unit_${i}`).value.trim();
     const apply = applyEl ? applyEl.checked : false;
@@ -3029,6 +3075,15 @@ async function confirmReceiptSave(){
     const originalText = receiptRows[i] ? receiptRows[i].originalText : '';
     const hasValidNumbers = isFinite(price) && isFinite(size) && size > 0;
     const hasTarget = catalog === 'ingredient' ? !!rawId : (isNewSupply ? !!newName : (catalog === 'supply' ? !!rawId : false));
+    // A lump-sum discount ("brisket was $5 off the whole cut, not per lb") doesn't change
+    // what was typed as the per-unit price paid — it changes what was actually spent. Net
+    // it out of the line total, then back-derive the true effective per-unit price from
+    // that, so a scanned discount actually lowers the tracked $/lb instead of the sticker
+    // price silently overstating true cost.
+    const hasDiscount = isFinite(discount) && discount > 0;
+    const grossTotal = (isFinite(qty) && isFinite(price)) ? qty*price : null;
+    const netTotal = (grossTotal!=null && hasDiscount) ? Math.max(0, grossTotal - discount) : grossTotal;
+    const effectivePrice = (netTotal!=null && isFinite(qty) && qty>0) ? netTotal/qty : price;
     lineItems.push({
       itemText, originalText,
       catalog,
@@ -3036,8 +3091,11 @@ async function confirmReceiptSave(){
       supplyId: (catalog === 'supply' && !isNewSupply) ? rawId : null,
       isNewSupply, newName,
       qty: isFinite(qty) ? qty : null,
-      lineTotal: (isFinite(qty) && isFinite(price)) ? qty*price : null,
-      price: isFinite(price) ? price : null, size: isFinite(size) ? size : null, unit,
+      lineTotal: netTotal,
+      grossPrice: isFinite(price) ? price : null, // per-unit price as printed, before any discount
+      discount: hasDiscount ? discount : null,
+      price: isFinite(effectivePrice) ? effectivePrice : null, // the price actually saved to the catalog — net of discount
+      size: isFinite(size) ? size : null, unit,
       applied: !!(apply && catalog && hasTarget && hasValidNumbers)
     });
   }

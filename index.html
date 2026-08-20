@@ -2409,8 +2409,16 @@ refreshReceiptLog();
 
 // Downscale + re-encode the photo client-side before storing, so a multi-MB phone
 // photo doesn't balloon IndexedDB usage. Returns a JPEG Blob.
+// Downscale + re-encode the photo client-side before OCR/storage. maxDim was 1600,
+// which crushes a tall skinny receipt photo down to a few hundred px wide once its
+// long dimension is capped — way too little detail for Tesseract to read small
+// thermal-printer digits. Bumped to 2200. Also runs the image through a grayscale +
+// contrast/brightness boost before OCR (not before storage — the ORIGINAL colors are
+// still what gets saved as the receipt photo) since faint low-contrast thermal print
+// is a big source of digit misreads (6 read as 0, 3 as 8, etc.) — tested against a
+// real receipt and this alone fixed multiple previously-misread prices.
 function compressReceiptImage(file, maxDim, quality){
-  maxDim = maxDim || 1600; quality = quality || 0.72;
+  maxDim = maxDim || 2200; quality = quality || 0.78;
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
@@ -2429,6 +2437,26 @@ function compressReceiptImage(file, maxDim, quality){
     img.src = url;
   });
 }
+// A second, separate pass used ONLY to feed Tesseract — grayscale + contrast/brightness
+// boost, which measurably improves digit accuracy on faint thermal receipt print. Takes
+// the already-compressed (but still full-color) blob from compressReceiptImage() so the
+// stored receipt photo itself stays untouched/natural-looking.
+function ocrPrepImage(blob){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width; canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.filter = 'grayscale(1) contrast(1.6) brightness(1.1)';
+      ctx.drawImage(img, 0, 0);
+      canvas.toBlob(out => { URL.revokeObjectURL(url); out ? resolve(out) : reject(new Error('Could not prep image for OCR')); }, 'image/jpeg', 0.9);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read image')); };
+    img.src = url;
+  });
+}
 
 function normalizeReceiptText(s){
   return (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -2437,12 +2465,23 @@ function normalizeReceiptText(s){
 // scores by fraction of the ingredient label's significant words found in the
 // line. Deliberately loose: the review screen is where a bad match gets fixed
 // or rejected, not here.
+// Same root word, allowing for a plural/short-suffix mismatch ("crouton" on the
+// receipt vs. "croutons" in the catalog label) — a prefix match on words long
+// enough (4+ chars) that a short accidental prefix ("ba"/"bag") can't false-hit.
+function wordsShareRoot(a, b){
+  if(a === b) return true;
+  if(a.length < 4 || b.length < 4) return false;
+  return a.startsWith(b) || b.startsWith(a);
+}
 function bestLabelMatch(words, labelRaw){
   const label = normalizeReceiptText(labelRaw.replace(/\([^)]*\)/g, ''));
   const labelWords = label.split(' ').filter(w => w.length > 2);
   if(!labelWords.length) return 0;
+  const wordList = Array.from(words);
   let hits = 0;
-  labelWords.forEach(w => { if(words.has(w)) hits++; });
+  labelWords.forEach(w => {
+    if(words.has(w) || wordList.some(ow => wordsShareRoot(w, ow))) hits++;
+  });
   // Receipt text is usually a short, abbreviated slice of the fuller catalog label
   // ("BUTTERMILK QT" vs "Kroger Cultured 1.5% Reduced Fat Buttermilk (quart)"), so
   // score against whichever side is shorter rather than always the full label —
@@ -2476,6 +2515,39 @@ function matchCatalogItem(lineText){
 }
 // Splits OCR'd receipt text into candidate {itemText, price} lines, and takes
 // a guess at the receipt total if a "total" line is present.
+// A wholesale/club-style receipt (e.g. Chef'Store/US Foods) prints each line item as
+// TWO physical lines — the item name on its own line, then a second line with just
+// the unit, quantity, and price(s) ("EA   2   $9.69   $19.38T"). A grocery-store
+// receipt is more often ONE line ("BUTTERMILK QT   $2.69"). This tells those apart:
+// if the text before the matched price is just a unit code and/or a bare number, it's
+// the two-line style and the real item name is the previous (price-less) line, not
+// this one.
+const RECEIPT_UNIT_QTY_RE = /^(ea|lb|lbs|kg|oz|ct|cs|case|pk|pkg|bag|box|dz|gal|qt|pt)s?\.?\s*[\d.,]*$/i;
+// The real signal that text is a unit/qty column fragment (not an item name) —
+// OCR frequently mangles the unit code itself ("EA" -> "ht"/"FA", "CS" -> "C$",
+// a quantity like "21.1" -> "ad") so matching the exact unit word alone misses a
+// lot of cases. A genuine item description almost always has at least one real
+// word of 3+ letters in it; a unit/qty fragment (garbled or not) usually doesn't.
+function looksLikeUnitQtyOnly(text){
+  if(!text) return true;
+  if(!/[a-z]{3,}/i.test(text)) return true;
+  return RECEIPT_UNIT_QTY_RE.test(text) || /^[\d.,\s]*$/.test(text);
+}
+// Lines that are receipt metadata/totals rather than a purchased item — matched
+// before the general item-line logic so they never get logged as a phantom $0-ish
+// line item. Order matters: more specific patterns (tax, item-count) are checked
+// before the generic "total" detector so e.g. "Total Tax" and "Total no. of Items"
+// don't get mistaken for the grand total.
+function classifyReceiptLine(line){
+  if(/sub ?total/i.test(line)) return 'skip';
+  if(/\bbalance\b/i.test(line)) return 'skip'; // "remaining balance"/"balance due" — what's still owed, not the purchase total (whole-word match since OCR often mangles the word(s) in front of it)
+  if(/tax/i.test(line)) return 'skip'; // catches "Tax", "Sales Tax", "Total Tax", "State Tax"
+  if(/^state\b/i.test(line)) return 'skip'; // state tax-rate line when "tax" itself misread
+  if(/\bno\.?\s*of\b|item count|items? sold/i.test(line)) return 'skip'; // "Total no. of Items 97"
+  if(/you saved|bottle\s*\/?\s*crv|credit card|^cash\b|change due|\bdiscount\b|savings/i.test(line)) return 'skip';
+  if(/\btotal\b|amount due|amount paid/i.test(line)) return 'total';
+  return 'item';
+}
 function parseReceiptText(text){
   const priceRe = /\$?\s*(\d{1,4}\.\d{2})(?!\d)/;
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -2487,10 +2559,15 @@ function parseReceiptText(text){
     if(!m){ carryText = line; return; }
     const price = parseFloat(m[1]);
     const before = line.slice(0, m.index).trim();
-    if(/sub ?total/i.test(line)){ carryText = ''; return; }
-    if(/total|balance|amount due/i.test(line)){ totalGuess = price; carryText = ''; return; }
-    if(/^tax\b/i.test(line) || /sales tax/i.test(line)){ carryText = ''; return; }
-    const itemText = before.length > 2 ? before : carryText;
+    const kind = classifyReceiptLine(line);
+    if(kind === 'skip'){ carryText = ''; return; }
+    if(kind === 'total'){ totalGuess = price; carryText = ''; return; }
+    // Prefer the item-name line above (carryText) whenever the text on THIS line looks
+    // like just a unit/quantity column rather than an actual description — that's the
+    // two-line receipt layout. Only fall back to "before" (this line's own text) when
+    // there's nothing usable above it, or this line clearly carries real item text
+    // itself (the single-line layout).
+    const itemText = (!looksLikeUnitQtyOnly(before) && before.length > 2) ? before : (carryText || before);
     if(itemText) items.push({rawLine: line, itemText, price});
     carryText = '';
   });
@@ -2507,12 +2584,13 @@ async function handleReceiptPhoto(evt){
 
   try {
     const compressed = await compressReceiptImage(file);
+    const ocrReady = await ocrPrepImage(compressed); // grayscale/contrast pass, OCR only — compressed (unfiltered) is what gets saved
     if(!receiptOcrWorker){
       statusEl.textContent = 'Loading OCR (first scan only)…';
       receiptOcrWorker = await Tesseract.createWorker('eng');
     }
     statusEl.textContent = 'Reading receipt…';
-    const result = await receiptOcrWorker.recognize(compressed);
+    const result = await receiptOcrWorker.recognize(ocrReady);
     const parsed = parseReceiptText(result.data.text);
     statusEl.style.display = 'none';
     renderReceiptReview(parsed, compressed);

@@ -460,6 +460,7 @@
         <label for="receiptPhotoInput">Photo of receipt</label>
         <input type="file" id="receiptPhotoInput" accept="image/*" capture="environment" onchange="handleReceiptPhoto(event)">
       </div>
+      <div class="note" style="margin-top:6px;">Or <a href="#" onclick="startManualReceipt(event)">log a receipt by hand</a> — no photo, just type the items in.</div>
       <div id="receiptScanStatus" class="note" style="display:none;margin-top:10px;"></div>
       <div id="receiptReviewArea" style="display:none;margin-top:16px;"></div>
 
@@ -614,7 +615,11 @@ const PRICE_BOOK = {
   garlicPowder:     { label:"Garlic Powder (Monarch)", price:61.29, size:102, unit:'oz', ozPerCup:5.7 },
   paprika:          { label:"Paprika", price:4.99, size:1.75, unit:'oz', ozPerCup:3.9 }, // density estimate, matches the cayenne density below — verify against your own measured tsp weight if precision matters
   pepperCoarse:     { label:"Black Pepper, Coarse Ground (Monarch)", price:85.09, size:85, unit:'oz', ozPerCup:3.984 },
-  parmesan:         { label:"Grated Parmesan", price:5.79, size:8, unit:'oz', ozPerCup:3 }, // verify against your actual container
+  parmesan:         { label:"Grated Parmesan (for Dinner Rolls)", price:5.79, size:8, unit:'oz', ozPerCup:3 }, // verify against your actual container
+  parmesanShredded: { label:"Shredded Parmesan (for Caesar Salad)", price:1.98, size:6, unit:'oz' }, // separate product/price from the Grated Parmesan used in Dinner Rolls above
+  romaineBag:       { label:"Chopped Romaine Lettuce (32oz bag)", price:4.98, size:1, unit:'bag' },
+  seasonedCroutons: { label:"Seasoned Croutons (40oz bag)", price:9.69, size:40, unit:'oz' },
+  caesarDressing:   { label:"Caesar Salad Dressing (16oz bottle)", price:2.32, size:16, unit:'oz' },
   beansCan:         { label:"Bush's Baked Beans (55oz can)", price:6.19, size:1, unit:'can' },
   baconBits:        { label:"Kroger Real Bacon Bits (loyalty price)", price:2.19, size:3, unit:'oz' },
   coleslawBox:      { label:"Reser's Coleslaw Regular", price:15.99, size:7, unit:'lb' },
@@ -709,6 +714,27 @@ const POTATO_SALAD_RECIPE = {
   pansPerBatch: 1, // the 13x9 aluminum pan it gets decanted into
   prepMin: 5, // open box, dump into pan, cover with foil — no cooking, keep chilled until service
   costs: { boxLbPerBatch: () => priceBookRate('potatoSaladBox'), pansPerBatch: () => priceBookRate('aluminumPan') }
+};
+// Croutons & parmesan are served on the side, self-serve, not mixed into the pan —
+// budgeted at 6oz of each per pan (Brent's estimate; the parmesan bag happens to be
+// exactly 6oz, so that's one full bag per pan, while croutons come in a 40oz bag so
+// most of the bag carries over/gets reused across pans). Revisit these amounts once
+// real usage from a few events shows whether that's more (or less) than gets used.
+const CAESAR_RECIPE = {
+  batchServes: 22, // one pan/batch matches Caesar Salad's existing 22-serving pan size
+  romaineBagsPerBatch: 1, // one 32oz bag of chopped romaine per pan
+  croutonsOzPerBatch: 6, // set out on the side per pan
+  parmesanOzPerBatch: 6, // set out on the side per pan
+  dressingOzPerBatch: 6, // set out on the side per pan, same self-serve pattern as croutons/parmesan
+  pansPerBatch: 1, // the 13x9 aluminum pan the romaine goes in
+  prepMin: 5, // chop/pan the romaine, set croutons, parmesan & dressing out alongside — no cooking
+  costs: {
+    romaineBagsPerBatch: () => priceBookRate('romaineBag'),
+    croutonsOzPerBatch: () => priceBookRate('seasonedCroutons'),
+    parmesanOzPerBatch: () => priceBookRate('parmesanShredded'),
+    dressingOzPerBatch: () => priceBookRate('caesarDressing'),
+    pansPerBatch: () => priceBookRate('aluminumPan')
+  }
 };
 const MAC_RECIPE = {
   batchServes: 38, // one pan/batch = one 13x9 pan baked ~3in deep — ~194 fl oz of finished mac & cheese / ~5oz portion ≈ 38 servings
@@ -1221,6 +1247,21 @@ function doRunCalc(){
         prepMin: r.prepMin, cookMin: 0
       });
     }
+    if(s.key==='caesar'){
+      const batches = pans; // servesPerPan (22) matches one bag-of-romaine batch
+      const r = CAESAR_RECIPE;
+      const ci = computeRecipeCost(r, batches);
+      recipeItems.push({
+        recipeType: 'caesar',
+        name: s.name, batches, sellPrice: cost,
+        ingredientCost: ci.cost, costsKnown: ci.known, costsTotal: ci.total,
+        romaineBags: r.romaineBagsPerBatch*batches,
+        croutonsOz: r.croutonsOzPerBatch*batches,
+        parmesanOz: r.parmesanOzPerBatch*batches,
+        dressingOz: r.dressingOzPerBatch*batches,
+        prepMin: r.prepMin, cookMin: 0
+      });
+    }
     if(s.key==='mac'){
       const batches = pans; // servesPerPan (22) matches one from-scratch recipe batch
       const r = MAC_RECIPE;
@@ -1601,6 +1642,8 @@ function renderTimeline(plan){
       cookEvents.push({t:r.prepStart, label:`Melt butter, mix in cheese &amp; garlic, coat ${r.name}`});
       cookEvents.push({t:r.roastStart, label:`Let ${r.name} rise ~${Math.round(r.riseMin/60)} hr or until doubled`});
       cookEvents.push({t:bakeStart, label:`Bake ${r.name} at 375°F (~${r.bakeMin} min, golden brown)`});
+    } else if(r.recipeType==='caesar'){
+      cookEvents.push({t:r.prepStart, label:`Chop &amp; pan romaine, set out croutons, parmesan &amp; dressing for ${r.name} (${r.batches} batch${r.batches>1?'es':''})`});
     } else {
       cookEvents.push({t:r.prepStart, label:`Boil, dry &amp; smash ${r.name} (${r.batches} batch${r.batches>1?'es':''})`});
       cookEvents.push({t:r.roastStart, label:`Roast ${r.name} (${r.cookMin} min, ${r.sheetPans} sheet pan${r.sheetPans>1?'s':''})`});
@@ -1697,6 +1740,11 @@ function renderResults(plan){
         sh += `<li><span>Butter (not margarine)</span><span>${r.butterCup.toFixed(2)} cups (${(r.butterCup*2).toFixed(1)} cubes)</span></li>`;
         sh += `<li><span>Thyme</span><span>${r.thymeTsp.toFixed(2)} tsp</span></li>`;
         sh += `<li><span>Rosemary</span><span>${r.rosemaryTsp.toFixed(2)} tsp</span></li>`;
+      } else if(r.recipeType==='caesar'){
+        sh += `<li><span>Chopped Romaine Lettuce (32oz bag)</span><span>${r.romaineBags} bag${r.romaineBags>1?'s':''}</span></li>`;
+        sh += `<li><span>Seasoned Croutons (40oz bag) — for the side</span><span>${Math.ceil(r.croutonsOz/40)} bag${Math.ceil(r.croutonsOz/40)>1?'s':''}</span></li>`;
+        sh += `<li><span>Shredded Parmesan (6oz bag) — for the side</span><span>${Math.ceil(r.parmesanOz/6)} bag${Math.ceil(r.parmesanOz/6)>1?'s':''}</span></li>`;
+        sh += `<li><span>Caesar Dressing (16oz bottle) — for the side</span><span>${Math.ceil(r.dressingOz/16)} bottle${Math.ceil(r.dressingOz/16)>1?'s':''}</span></li>`;
       } else {
         sh += `<li><span>Baby potatoes</span><span>${r.potatoesLb} lb</span></li>`;
         sh += `<li><span>Kosher salt (for boiling)</span><span>${r.boilSaltTbsp} tbsp</span></li>`;
@@ -2207,6 +2255,8 @@ function downloadICS(){
       evs.push({start:r.prepStart, minutes:r.prepMin, title:`Cornerstone: Coat ${r.name} in butter mixture`});
       evs.push({start:r.roastStart, minutes:r.riseMin, title:`Cornerstone: ${r.name} rising`});
       evs.push({start:bakeStart, minutes:r.bakeMin, title:`Cornerstone: Bake ${r.name} at 375°F`});
+    } else if(r.recipeType==='caesar'){
+      evs.push({start:r.prepStart, minutes:r.prepMin, title:`Cornerstone: Chop & pan romaine, set out croutons, parmesan & dressing for ${r.name}`});
     } else {
       evs.push({start:r.prepStart, minutes:r.prepMin, title:`Cornerstone: Boil, dry & smash ${r.name}`});
       evs.push({start:r.roastStart, minutes:r.cookMin, title:`Cornerstone: Roast ${r.name}`});
@@ -2476,7 +2526,14 @@ async function handleReceiptPhoto(evt){
 }
 
 let pendingReceiptPhotoBlob = null;
-let pendingReceiptItems = []; // raw {itemText, price} rows from this scan, so confirmReceiptSave() can learn corrections by original OCR text
+// The single source of truth for the review screen — one object per line item.
+// originalText is frozen at creation (the raw OCR reading, or '' for a row you
+// added by hand) and is what future scans are matched against; text is the
+// editable/display copy so you can retype a garbled name without losing that
+// OCR-text matching key. Rows can be added/removed, so this array (not a fixed
+// count) drives rendering — see renderReceiptRows().
+let receiptRows = [];
+
 // Select value scheme: "" = no match/skip, "ing:<id>" = PRICE_BOOK ingredient,
 // "sup:<id>" = existing tracked SUPPLY_BOOK item, "sup:new" = create a new tracked
 // supply from this line (reveals a name field).
@@ -2493,8 +2550,16 @@ function buildCatalogOptions(selected){
   html += '</optgroup>';
   return html;
 }
+function escapeAttr(s){
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
 function onReceiptMatchChange(i){
   const sel = document.getElementById(`rcpt_match_${i}`);
+  const row = receiptRows[i];
+  if(!row || !sel) return;
+  row.matchValue = sel.value;
+  row.userPickedMatch = true; // a deliberate manual choice — don't let further typing override it
+  row.apply = !!sel.value;
   const nameField = document.getElementById(`rcpt_newname_field_${i}`);
   if(nameField) nameField.style.display = (sel.value === 'sup:new') ? '' : 'none';
   // Nicety: if this line is matched to a tracked business supply, nudge the
@@ -2504,58 +2569,143 @@ function onReceiptMatchChange(i){
   if(catEl && sel.value.startsWith('sup:') && catEl.value === 'Ingredients'){
     catEl.value = 'Supplies';
   }
+  const entry = sel.value.startsWith('ing:') ? PRICE_BOOK[sel.value.slice(4)]
+    : (sel.value.startsWith('sup:') && sel.value !== 'sup:new' ? SUPPLY_BOOK[sel.value.slice(4)] : null);
+  if(entry){
+    row.size = entry.size; row.unit = entry.unit;
+    const sizeEl = document.getElementById(`rcpt_size_${i}`); if(sizeEl) sizeEl.value = entry.size;
+    const unitEl = document.getElementById(`rcpt_unit_${i}`); if(unitEl) unitEl.value = entry.unit;
+  }
+  const applyEl = document.getElementById(`rcpt_apply_${i}`); if(applyEl) applyEl.checked = row.apply;
+}
+// Fires when the item-name field is edited (typed a correction, or typed a brand
+// new item on a manually-added row) and loses focus. Re-runs the catalog match
+// against the corrected text and updates the dropdown — unless you've already
+// picked something yourself for this row, in which case your choice wins.
+function onReceiptTextChange(i){
+  const row = receiptRows[i];
+  const textEl = document.getElementById(`rcpt_text_${i}`);
+  if(!row || !textEl) return;
+  row.text = textEl.value;
+  if(row.userPickedMatch) return;
+  const match = matchCatalogItem(row.text);
+  const newVal = match ? `${match.catalog==='ingredient'?'ing':'sup'}:${match.id}` : '';
+  row.matchValue = newVal;
+  row.apply = !!match;
+  const sel = document.getElementById(`rcpt_match_${i}`);
+  if(sel) sel.innerHTML = `<option value="" ${newVal?'':'selected'}>— no match, skip —</option>${buildCatalogOptions(newVal)}`;
+  const entry = match ? (match.catalog==='ingredient' ? PRICE_BOOK[match.id] : SUPPLY_BOOK[match.id]) : null;
+  if(entry){
+    row.size = entry.size; row.unit = entry.unit;
+    const sizeEl = document.getElementById(`rcpt_size_${i}`); if(sizeEl) sizeEl.value = entry.size;
+    const unitEl = document.getElementById(`rcpt_unit_${i}`); if(unitEl) unitEl.value = entry.unit;
+  }
+  const applyEl = document.getElementById(`rcpt_apply_${i}`); if(applyEl) applyEl.checked = row.apply;
+  const nameField = document.getElementById(`rcpt_newname_field_${i}`);
+  if(nameField) nameField.style.display = newVal === 'sup:new' ? '' : 'none';
+}
+// Keeps price/size/unit/new-name/apply in sync on receiptRows as you edit them,
+// so add/remove (which re-renders the whole list from receiptRows) never loses
+// an edit you already made on another row.
+function onReceiptFieldChange(i){
+  const row = receiptRows[i];
+  if(!row) return;
+  const priceEl = document.getElementById(`rcpt_price_${i}`); if(priceEl) row.price = parseFloat(priceEl.value);
+  const sizeEl = document.getElementById(`rcpt_size_${i}`); if(sizeEl) row.size = parseFloat(sizeEl.value);
+  const unitEl = document.getElementById(`rcpt_unit_${i}`); if(unitEl) row.unit = unitEl.value;
+  const newNameEl = document.getElementById(`rcpt_newname_${i}`); if(newNameEl) row.newName = newNameEl.value;
+  const applyEl = document.getElementById(`rcpt_apply_${i}`); if(applyEl) row.apply = applyEl.checked;
+}
+function receiptRowHtml(row, i){
+  return `
+    <div class="field" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;" data-row="${i}">
+      <div class="grid2" style="align-items:end;">
+        <div class="field">
+          <label>Item name — type to fix a misread, or search the catalog</label>
+          <input type="text" id="rcpt_text_${i}" value="${escapeAttr(row.text)}" onchange="onReceiptTextChange(${i})" placeholder="e.g. Buttermilk, Nitrile Gloves">
+        </div>
+        <button type="button" class="secondary" style="width:auto;padding:8px 14px;font-size:11px;" onclick="removeReceiptRow(${i})">Remove item</button>
+      </div>
+      ${row.fromAlias ? `<div class="item-sub">Matched from a correction you made before — pick a different item below if this one's wrong.</div>` : ''}
+      <div class="grid2">
+        <div class="field">
+          <label>Update / track as</label>
+          <select id="rcpt_match_${i}" onchange="onReceiptMatchChange(${i})"><option value="" ${row.matchValue?'':'selected'}>— no match, skip —</option>${buildCatalogOptions(row.matchValue)}</select>
+        </div>
+        <div class="field">
+          <label>Price paid</label>
+          <input type="number" step="0.01" id="rcpt_price_${i}" value="${isFinite(row.price) ? row.price.toFixed(2) : ''}" onchange="onReceiptFieldChange(${i})">
+        </div>
+      </div>
+      <div class="field" id="rcpt_newname_field_${i}" style="display:${row.matchValue==='sup:new' ? '' : 'none'};">
+        <label>New supply name</label>
+        <input type="text" id="rcpt_newname_${i}" value="${escapeAttr(row.newName)}" onchange="onReceiptFieldChange(${i})" placeholder="e.g. Nitrile Gloves (box of 100), Propane Refill">
+      </div>
+      <div class="grid2">
+        <div class="field">
+          <label>Package size</label>
+          <input type="number" step="0.01" id="rcpt_size_${i}" value="${row.size}" onchange="onReceiptFieldChange(${i})" placeholder="e.g. 5">
+        </div>
+        <div class="field">
+          <label>Unit</label>
+          <input type="text" id="rcpt_unit_${i}" value="${escapeAttr(row.unit)}" onchange="onReceiptFieldChange(${i})" placeholder="e.g. lb, oz, ct, ea">
+        </div>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-weight:400;">
+        <input type="checkbox" id="rcpt_apply_${i}" ${row.apply ? 'checked' : ''} onchange="onReceiptFieldChange(${i})" style="width:auto;">
+        Apply this update
+      </label>
+    </div>`;
+}
+function renderReceiptRows(){
+  const container = document.getElementById('rcptItemRows');
+  if(!container) return;
+  container.innerHTML = receiptRows.length
+    ? receiptRows.map((row, i) => receiptRowHtml(row, i)).join('')
+    : `<div class="note">No line items yet — use "+ Add Item" below, or scan a receipt photo.</div>`;
+}
+function addReceiptRow(){
+  receiptRows.push({originalText:'', text:'', price:NaN, matchValue:'', size:1, unit:'ea', newName:'', apply:false, userPickedMatch:false, fromAlias:false});
+  renderReceiptRows();
+  const el = document.getElementById(`rcpt_text_${receiptRows.length - 1}`);
+  if(el) el.focus();
+}
+function removeReceiptRow(i){
+  receiptRows.splice(i, 1);
+  renderReceiptRows();
+}
+function startManualReceipt(evt){
+  if(evt) evt.preventDefault();
+  const statusEl = document.getElementById('receiptScanStatus');
+  if(statusEl) statusEl.style.display = 'none';
+  renderReceiptReview({items: [], totalGuess: null, vendorGuess: ''}, null);
 }
 function renderReceiptReview(parsed, photoBlob){
   pendingReceiptPhotoBlob = photoBlob;
-  pendingReceiptItems = parsed.items;
-  const reviewEl = document.getElementById('receiptReviewArea');
-
-  let rows = parsed.items.map((it, i) => {
+  receiptRows = parsed.items.map(it => {
     const match = matchCatalogItem(it.itemText);
-    const selectedVal = match ? `${match.catalog==='ingredient'?'ing':'sup'}:${match.id}` : '';
     const catalogEntry = match ? (match.catalog==='ingredient' ? PRICE_BOOK[match.id] : SUPPLY_BOOK[match.id]) : null;
-    return `
-      <div class="field" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;" data-row="${i}">
-        <label>OCR read: "${it.itemText}" — $${it.price.toFixed(2)}</label>
-        ${match && match.fromAlias ? `<div class="item-sub">Matched from a correction you made before — pick a different item below if this one's wrong.</div>` : ''}
-        <div class="grid2">
-          <div class="field">
-            <label>Update / track as</label>
-            <select id="rcpt_match_${i}" onchange="onReceiptMatchChange(${i})"><option value="" ${match?'':'selected'}>— no match, skip —</option>${buildCatalogOptions(selectedVal)}</select>
-          </div>
-          <div class="field">
-            <label>Price paid</label>
-            <input type="number" step="0.01" id="rcpt_price_${i}" value="${it.price.toFixed(2)}">
-          </div>
-        </div>
-        <div class="field" id="rcpt_newname_field_${i}" style="display:none;">
-          <label>New supply name</label>
-          <input type="text" id="rcpt_newname_${i}" placeholder="e.g. Nitrile Gloves (box of 100), Propane Refill">
-        </div>
-        <div class="grid2">
-          <div class="field">
-            <label>Package size</label>
-            <input type="number" step="0.01" id="rcpt_size_${i}" value="${catalogEntry ? catalogEntry.size : 1}" placeholder="e.g. 5">
-          </div>
-          <div class="field">
-            <label>Unit</label>
-            <input type="text" id="rcpt_unit_${i}" value="${catalogEntry ? catalogEntry.unit : 'ea'}" placeholder="e.g. lb, oz, ct, ea">
-          </div>
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;font-weight:400;">
-          <input type="checkbox" id="rcpt_apply_${i}" ${match ? 'checked' : ''} style="width:auto;">
-          Apply this update
-        </label>
-      </div>`;
-  }).join('');
-  if(!rows) rows = `<div class="note">No line items were read automatically — you can still log this receipt below without updating any prices.</div>`;
+    return {
+      originalText: it.itemText,
+      text: it.itemText,
+      price: it.price,
+      matchValue: match ? `${match.catalog==='ingredient'?'ing':'sup'}:${match.id}` : '',
+      size: catalogEntry ? catalogEntry.size : 1,
+      unit: catalogEntry ? catalogEntry.unit : 'ea',
+      newName: '',
+      apply: !!match,
+      userPickedMatch: false,
+      fromAlias: !!(match && match.fromAlias)
+    };
+  });
 
+  const reviewEl = document.getElementById('receiptReviewArea');
   const today = new Date().toISOString().slice(0,10);
   reviewEl.innerHTML = `
     <div class="group-label">Review Before Saving</div>
-    <div class="group-note">Nothing is applied until you hit Confirm — edit or uncheck anything OCR got wrong.</div>
+    <div class="group-note">Nothing is applied until you hit Confirm — edit, retype, add, or remove anything OCR got wrong.</div>
     <div class="grid2">
-      <div class="field"><label>Vendor</label><input type="text" id="rcpt_vendor" value="${(parsed.vendorGuess||'').replace(/"/g,'&quot;')}" placeholder="e.g. Kroger, Walmart, US Foods Chef'Store"></div>
+      <div class="field"><label>Vendor</label><input type="text" id="rcpt_vendor" value="${escapeAttr(parsed.vendorGuess||'')}" placeholder="e.g. Kroger, Walmart, US Foods Chef'Store"></div>
       <div class="field"><label>Date</label><input type="date" id="rcpt_date" value="${today}"></div>
     </div>
     <div class="grid2">
@@ -2570,26 +2720,27 @@ function renderReceiptReview(parsed, photoBlob){
         </select>
       </div>
     </div>
-    <div id="rcptItemRows">${rows}</div>
+    <div id="rcptItemRows"></div>
+    <div class="actions" style="margin-top:12px;">
+      <button type="button" class="secondary" style="width:auto;padding:8px 14px;font-size:11px;" onclick="addReceiptRow()">+ Add Item</button>
+    </div>
     <div class="actions" style="margin-top:16px;">
       <button class="primary" onclick="confirmReceiptSave()">Confirm &amp; Save</button>
       <button class="secondary" onclick="discardReceiptReview()">Discard</button>
     </div>
   `;
-  reviewEl.dataset.itemCount = parsed.items.length;
+  renderReceiptRows();
   reviewEl.style.display = '';
 }
 
 function discardReceiptReview(){
   pendingReceiptPhotoBlob = null;
-  pendingReceiptItems = [];
+  receiptRows = [];
   const reviewEl = document.getElementById('receiptReviewArea');
   reviewEl.style.display = 'none'; reviewEl.innerHTML = '';
 }
 
 async function confirmReceiptSave(){
-  const reviewEl = document.getElementById('receiptReviewArea');
-  const count = parseInt(reviewEl.dataset.itemCount || '0', 10);
   const vendor = document.getElementById('rcpt_vendor').value.trim() || 'Unknown vendor';
   const date = document.getElementById('rcpt_date').value || new Date().toISOString().slice(0,10);
   const totalVal = parseFloat(document.getElementById('rcpt_total').value);
@@ -2599,9 +2750,10 @@ async function confirmReceiptSave(){
   // Select value scheme: "" = no match/skip, "ing:<id>" = PRICE_BOOK ingredient,
   // "sup:<id>" = existing SUPPLY_BOOK item, "sup:new" = create a new tracked supply.
   const lineItems = [];
-  for(let i=0; i<count; i++){
+  for(let i=0; i<receiptRows.length; i++){
     const sel = document.getElementById(`rcpt_match_${i}`);
     const applyEl = document.getElementById(`rcpt_apply_${i}`);
+    const textEl = document.getElementById(`rcpt_text_${i}`);
     const raw = sel ? sel.value : '';
     const isNewSupply = raw === 'sup:new';
     const catalog = raw.startsWith('ing:') ? 'ingredient' : (raw.startsWith('sup:') ? 'supply' : null);
@@ -2611,9 +2763,12 @@ async function confirmReceiptSave(){
     const size = parseFloat(document.getElementById(`rcpt_size_${i}`).value);
     const unit = document.getElementById(`rcpt_unit_${i}`).value.trim();
     const apply = applyEl ? applyEl.checked : false;
+    const itemText = textEl ? textEl.value.trim() : '';
+    const originalText = receiptRows[i] ? receiptRows[i].originalText : '';
     const hasValidNumbers = isFinite(price) && isFinite(size) && size > 0;
     const hasTarget = catalog === 'ingredient' ? !!rawId : (isNewSupply ? !!newName : (catalog === 'supply' ? !!rawId : false));
     lineItems.push({
+      itemText, originalText,
       catalog,
       priceBookId: catalog === 'ingredient' ? rawId : null,
       supplyId: (catalog === 'supply' && !isNewSupply) ? rawId : null,
@@ -2676,8 +2831,11 @@ async function confirmReceiptSave(){
     if(aliasCandidates.length){
       const aliasTx = db.transaction('ocrAliases', 'readwrite');
       const aliasStore = aliasTx.objectStore('ocrAliases');
-      aliasCandidates.forEach(({li, i}) => {
-        const rawText = (pendingReceiptItems[i] && pendingReceiptItems[i].itemText) || '';
+      aliasCandidates.forEach(({li}) => {
+        // Prefer the original OCR reading as the alias key — that's the garbled
+        // text a future scan of the same product will produce again. A row added
+        // by hand has no OCR baseline, so fall back to whatever was typed in.
+        const rawText = (li.originalText && li.originalText.trim()) ? li.originalText : li.itemText;
         const key = normalizeReceiptText(rawText);
         const targetId = li.catalog === 'ingredient' ? li.priceBookId : li.supplyId;
         if(!key || !targetId) return;

@@ -1759,6 +1759,7 @@ function renderResults(plan){
   }
   sh += `<li><span>Nitrile gloves, box</span><span>1 box</span></li>`;
   sh += `<li><span>Propane (check tank level)</span><span>Top off</span></li>`;
+  sh += `<li><span>Pam spray</span><span>Every job — check can level</span></li>`;
   sh += `</ul>`;
   sh = `<div class="note" style="margin-top:0;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><span>Check items off as you shop — they'll stay checked if you come back to this ticket.</span><button type="button" class="secondary" style="width:auto;flex-shrink:0;padding:6px 12px;font-size:11px;" onclick="resetShopChecklist('${plan.orderNum}')">Reset Checklist</button></div>` + sh;
   document.getElementById('shopBody').innerHTML = sh;
@@ -2249,7 +2250,7 @@ function downloadICS(){
    cost. Nothing here is used by / linked from request-form.html.
    ========================================================================= */
 const RECEIPT_DB_NAME = 'cornerstone_receipts';
-const RECEIPT_DB_VERSION = 2; // v2 adds the supplyItems store for non-food business expense tracking
+const RECEIPT_DB_VERSION = 3; // v2 adds the supplyItems store for non-food business expense tracking; v3 adds ocrAliases (learned corrections)
 let receiptOcrWorker = null; // created once, reused across scans
 
 // Non-food business purchases (propane, gloves, pans, equipment...) tracked the same
@@ -2257,6 +2258,12 @@ let receiptOcrWorker = null; // created once, reused across scans
 // price-history/expense-tracking catalog, built entirely from receipts (no seeded
 // defaults like PRICE_BOOK has). Populated from IndexedDB on load, see loadSupplyItems().
 let SUPPLY_BOOK = {};
+
+// Learned OCR corrections: normalized OCR line text -> {catalog, id}. Populated
+// from IndexedDB on load (see loadOcrAliases()) and grown every time a receipt
+// review's catalog match is confirmed — so once you correct a garbled OCR line
+// once, the same garbled text auto-matches correctly on every future scan.
+let OCR_ALIASES = {};
 
 function openReceiptDB(){
   return new Promise((resolve, reject) => {
@@ -2273,6 +2280,12 @@ function openReceiptDB(){
       }
       if(!db.objectStoreNames.contains('supplyItems')){
         db.createObjectStore('supplyItems', {keyPath:'id', autoIncrement:true}); // non-food tracked items
+      }
+      if(!db.objectStoreNames.contains('ocrAliases')){
+        // Learned corrections: normalized OCR text -> which catalog item it really means.
+        // keyPath = the normalized text itself, so a repeat scan of the same garbled
+        // OCR line looks itself up directly instead of relying on fuzzy scoring again.
+        db.createObjectStore('ocrAliases', {keyPath:'text'});
       }
     };
     req.onsuccess = (e) => resolve(e.target.result);
@@ -2327,8 +2340,21 @@ async function loadSupplyItems(){
     console.warn('Receipt Scanner: could not load tracked supplies', err);
   }
 }
+// Loads every learned OCR-text -> catalog-item correction into memory on page load.
+async function loadOcrAliases(){
+  try {
+    const db = await openReceiptDB();
+    const tx = db.transaction('ocrAliases', 'readonly');
+    const all = await idbRequest(tx.objectStore('ocrAliases').getAll());
+    OCR_ALIASES = {};
+    all.forEach(a => { OCR_ALIASES[a.text] = a; });
+  } catch(err){
+    console.warn('Receipt Scanner: could not load learned item corrections', err);
+  }
+}
 loadPriceOverrides();
 loadSupplyItems();
+loadOcrAliases();
 refreshReceiptLog();
 
 // Downscale + re-encode the photo client-side before storing, so a multi-MB phone
@@ -2377,7 +2403,15 @@ function bestLabelMatch(words, labelRaw){
 // SUPPLY_BOOK (tracked non-food business purchases) — and returns whichever scores
 // higher, tagged with which catalog it came from.
 function matchCatalogItem(lineText){
-  const words = new Set(normalizeReceiptText(lineText).split(' ').filter(w => w.length > 2));
+  const key = normalizeReceiptText(lineText);
+  // A previously-confirmed correction for this exact OCR text wins outright —
+  // no need to re-guess once you've told it what a garbled line actually means.
+  const alias = key ? OCR_ALIASES[key] : null;
+  if(alias){
+    const stillExists = alias.catalog === 'ingredient' ? PRICE_BOOK[alias.id] : SUPPLY_BOOK[alias.id];
+    if(stillExists) return {catalog: alias.catalog, id: alias.id, score: 1, fromAlias: true};
+  }
+  const words = new Set(key.split(' ').filter(w => w.length > 2));
   if(!words.size) return null;
   let best = null, bestScore = 0;
   for(const id in PRICE_BOOK){
@@ -2442,6 +2476,7 @@ async function handleReceiptPhoto(evt){
 }
 
 let pendingReceiptPhotoBlob = null;
+let pendingReceiptItems = []; // raw {itemText, price} rows from this scan, so confirmReceiptSave() can learn corrections by original OCR text
 // Select value scheme: "" = no match/skip, "ing:<id>" = PRICE_BOOK ingredient,
 // "sup:<id>" = existing tracked SUPPLY_BOOK item, "sup:new" = create a new tracked
 // supply from this line (reveals a name field).
@@ -2472,6 +2507,7 @@ function onReceiptMatchChange(i){
 }
 function renderReceiptReview(parsed, photoBlob){
   pendingReceiptPhotoBlob = photoBlob;
+  pendingReceiptItems = parsed.items;
   const reviewEl = document.getElementById('receiptReviewArea');
 
   let rows = parsed.items.map((it, i) => {
@@ -2481,6 +2517,7 @@ function renderReceiptReview(parsed, photoBlob){
     return `
       <div class="field" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;" data-row="${i}">
         <label>OCR read: "${it.itemText}" — $${it.price.toFixed(2)}</label>
+        ${match && match.fromAlias ? `<div class="item-sub">Matched from a correction you made before — pick a different item below if this one's wrong.</div>` : ''}
         <div class="grid2">
           <div class="field">
             <label>Update / track as</label>
@@ -2545,6 +2582,7 @@ function renderReceiptReview(parsed, photoBlob){
 
 function discardReceiptReview(){
   pendingReceiptPhotoBlob = null;
+  pendingReceiptItems = [];
   const reviewEl = document.getElementById('receiptReviewArea');
   reviewEl.style.display = 'none'; reviewEl.innerHTML = '';
 }
@@ -2627,6 +2665,27 @@ async function confirmReceiptSave(){
       }
       await idbTxDone(supplyTx);
       refreshSupplyBookDisplay();
+    }
+
+    // Learn from every applied match — whether it came from the automatic fuzzy
+    // match or you picking something different — so the exact same OCR'd text
+    // (garbled or not) matches this same catalog item automatically next time.
+    const aliasCandidates = lineItems
+      .map((li, i) => ({li, i}))
+      .filter(({li}) => li.applied && (li.catalog === 'ingredient' || li.catalog === 'supply'));
+    if(aliasCandidates.length){
+      const aliasTx = db.transaction('ocrAliases', 'readwrite');
+      const aliasStore = aliasTx.objectStore('ocrAliases');
+      aliasCandidates.forEach(({li, i}) => {
+        const rawText = (pendingReceiptItems[i] && pendingReceiptItems[i].itemText) || '';
+        const key = normalizeReceiptText(rawText);
+        const targetId = li.catalog === 'ingredient' ? li.priceBookId : li.supplyId;
+        if(!key || !targetId) return;
+        const record = {text: key, catalog: li.catalog, id: targetId, updatedAt: nowIso};
+        OCR_ALIASES[key] = record;
+        aliasStore.put(record);
+      });
+      await idbTxDone(aliasTx);
     }
 
     // save the receipt itself

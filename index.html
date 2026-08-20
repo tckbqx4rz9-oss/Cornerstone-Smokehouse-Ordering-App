@@ -2873,7 +2873,7 @@ function receiptRowHtml(row, i){
   const priceNum = isFinite(row.price) ? row.price : NaN;
   const lineTotalText = (isFinite(priceNum) && isFinite(qtyNum)) ? `Total this line: ${money(priceNum*qtyNum)}` : 'Total this line: —';
   return `
-    <div class="field" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;" data-row="${i}">
+    <div class="field" style="border-top:3px solid var(--iron);padding-top:14px;margin-top:16px;" data-row="${i}">
       <div class="grid2" style="align-items:end;">
         <div class="field">
           <label>Item name — type to fix a misread, or search the catalog</label>

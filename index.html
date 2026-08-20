@@ -2649,8 +2649,18 @@ function parseReceiptText(text){
     // two-line receipt layout. Only fall back to "before" (this line's own text) when
     // there's nothing usable above it, or this line clearly carries real item text
     // itself (the single-line layout).
-    const itemText = (!looksLikeUnitQtyOnly(before) && before.length > 2) ? before : (carryText || before);
-    if(itemText) items.push({rawLine: line, itemText, price});
+    const isUnitQtyLine = looksLikeUnitQtyOnly(before);
+    const itemText = (!isUnitQtyLine && before.length > 2) ? before : (carryText || before);
+    // When "before" IS the unit/qty fragment (two-line layout — "EA 2", "lb 21.1"),
+    // the quantity purchased is the number in it. Left null when it isn't (single-line
+    // layout, or the fragment didn't OCR cleanly enough to pull a number from) — the
+    // review screen defaults an unknown quantity to 1 rather than guessing further.
+    let qty = null;
+    if(isUnitQtyLine){
+      const qm = before.match(/(\d+(?:\.\d+)?)/);
+      if(qm) qty = parseFloat(qm[1]);
+    }
+    if(itemText) items.push({rawLine: line, itemText, price, qty});
     carryText = '';
   });
   return {items, totalGuess, vendorGuess: lines[0] || ''};
@@ -2770,13 +2780,29 @@ function onReceiptTextChange(i){
 function onReceiptFieldChange(i){
   const row = receiptRows[i];
   if(!row) return;
+  const qtyEl = document.getElementById(`rcpt_qty_${i}`); if(qtyEl) row.qty = parseFloat(qtyEl.value);
   const priceEl = document.getElementById(`rcpt_price_${i}`); if(priceEl) row.price = parseFloat(priceEl.value);
   const sizeEl = document.getElementById(`rcpt_size_${i}`); if(sizeEl) row.size = parseFloat(sizeEl.value);
   const unitEl = document.getElementById(`rcpt_unit_${i}`); if(unitEl) row.unit = unitEl.value;
   const newNameEl = document.getElementById(`rcpt_newname_${i}`); if(newNameEl) row.newName = newNameEl.value;
   const applyEl = document.getElementById(`rcpt_apply_${i}`); if(applyEl) row.apply = applyEl.checked;
 }
+// Live-updates the "Total this line" readout as you type in Quantity or Price paid —
+// doesn't touch receiptRows state (onReceiptFieldChange does that on blur/change), this
+// just keeps the displayed total in sync on every keystroke.
+function updateReceiptRowTotal(i){
+  const priceEl = document.getElementById(`rcpt_price_${i}`);
+  const qtyEl = document.getElementById(`rcpt_qty_${i}`);
+  const totalEl = document.getElementById(`rcpt_total_line_${i}`);
+  if(!priceEl || !qtyEl || !totalEl) return;
+  const price = parseFloat(priceEl.value);
+  const qty = parseFloat(qtyEl.value);
+  totalEl.textContent = (isFinite(price) && isFinite(qty)) ? `Total this line: ${money(price*qty)}` : 'Total this line: —';
+}
 function receiptRowHtml(row, i){
+  const qtyNum = isFinite(row.qty) ? row.qty : 1;
+  const priceNum = isFinite(row.price) ? row.price : NaN;
+  const lineTotalText = (isFinite(priceNum) && isFinite(qtyNum)) ? `Total this line: ${money(priceNum*qtyNum)}` : 'Total this line: —';
   return `
     <div class="field" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;" data-row="${i}">
       <div class="grid2" style="align-items:end;">
@@ -2789,13 +2815,18 @@ function receiptRowHtml(row, i){
       ${row.fromAlias ? `<div class="item-sub">Matched from a correction you made before — pick a different item below if this one's wrong.</div>` : ''}
       <div class="grid2">
         <div class="field">
-          <label>Update / track as</label>
-          <select id="rcpt_match_${i}" onchange="onReceiptMatchChange(${i})"><option value="" ${row.matchValue?'':'selected'}>— no match, skip —</option>${buildCatalogOptions(row.matchValue)}</select>
+          <label>Quantity purchased</label>
+          <input type="number" step="0.01" id="rcpt_qty_${i}" value="${qtyNum}" oninput="updateReceiptRowTotal(${i})" onchange="onReceiptFieldChange(${i})" placeholder="e.g. 2, 21.1">
         </div>
         <div class="field">
-          <label>Price paid</label>
-          <input type="number" step="0.01" id="rcpt_price_${i}" value="${isFinite(row.price) ? row.price.toFixed(2) : ''}" onchange="onReceiptFieldChange(${i})">
+          <label>Price paid (per unit/lb)</label>
+          <input type="number" step="0.01" id="rcpt_price_${i}" value="${isFinite(priceNum) ? priceNum.toFixed(2) : ''}" oninput="updateReceiptRowTotal(${i})" onchange="onReceiptFieldChange(${i})">
         </div>
+      </div>
+      <div class="item-sub" id="rcpt_total_line_${i}" style="margin:-6px 0 10px;">${lineTotalText}</div>
+      <div class="field">
+        <label>Update / track as</label>
+        <select id="rcpt_match_${i}" onchange="onReceiptMatchChange(${i})"><option value="" ${row.matchValue?'':'selected'}>— no match, skip —</option>${buildCatalogOptions(row.matchValue)}</select>
       </div>
       <div class="field" id="rcpt_newname_field_${i}" style="display:${row.matchValue==='sup:new' ? '' : 'none'};">
         <label>New supply name</label>
@@ -2825,7 +2856,7 @@ function renderReceiptRows(){
     : `<div class="note">No line items yet — use "+ Add Item" below, or scan a receipt photo.</div>`;
 }
 function addReceiptRow(){
-  receiptRows.push({originalText:'', text:'', price:NaN, matchValue:'', size:1, unit:'ea', newName:'', apply:false, userPickedMatch:false, fromAlias:false});
+  receiptRows.push({originalText:'', text:'', price:NaN, qty:1, matchValue:'', size:1, unit:'ea', newName:'', apply:false, userPickedMatch:false, fromAlias:false});
   renderReceiptRows();
   const el = document.getElementById(`rcpt_text_${receiptRows.length - 1}`);
   if(el) el.focus();
@@ -2849,6 +2880,7 @@ function renderReceiptReview(parsed, photoBlob){
       originalText: it.itemText,
       text: it.itemText,
       price: it.price,
+      qty: (it.qty!=null && isFinite(it.qty) && it.qty>0) ? it.qty : 1,
       matchValue: match ? `${match.catalog==='ingredient'?'ing':'sup'}:${match.id}` : '',
       size: catalogEntry ? catalogEntry.size : 1,
       unit: catalogEntry ? catalogEntry.unit : 'ea',
@@ -2919,6 +2951,7 @@ async function confirmReceiptSave(){
     const catalog = raw.startsWith('ing:') ? 'ingredient' : (raw.startsWith('sup:') ? 'supply' : null);
     const rawId = catalog === 'ingredient' ? raw.slice(4) : (catalog === 'supply' && !isNewSupply ? raw.slice(4) : '');
     const newName = isNewSupply ? (document.getElementById(`rcpt_newname_${i}`).value || '').trim() : '';
+    const qty = parseFloat(document.getElementById(`rcpt_qty_${i}`).value);
     const price = parseFloat(document.getElementById(`rcpt_price_${i}`).value);
     const size = parseFloat(document.getElementById(`rcpt_size_${i}`).value);
     const unit = document.getElementById(`rcpt_unit_${i}`).value.trim();
@@ -2933,6 +2966,8 @@ async function confirmReceiptSave(){
       priceBookId: catalog === 'ingredient' ? rawId : null,
       supplyId: (catalog === 'supply' && !isNewSupply) ? rawId : null,
       isNewSupply, newName,
+      qty: isFinite(qty) ? qty : null,
+      lineTotal: (isFinite(qty) && isFinite(price)) ? qty*price : null,
       price: isFinite(price) ? price : null, size: isFinite(size) ? size : null, unit,
       applied: !!(apply && catalog && hasTarget && hasValidNumbers)
     });
@@ -3112,9 +3147,15 @@ async function exportQuickenCSV(){
       // which only ever wrote priceBookId.
       const itemSummary = (r.lineItems||[]).filter(li=>li.priceBookId || li.supplyId || li.newName).map(li => {
         const catalog = li.catalog || (li.priceBookId ? 'ingredient' : null);
-        if(catalog === 'ingredient') return (PRICE_BOOK[li.priceBookId] && PRICE_BOOK[li.priceBookId].label) || li.priceBookId;
-        if(catalog === 'supply') return (SUPPLY_BOOK[li.supplyId] && SUPPLY_BOOK[li.supplyId].label) || li.newName || li.supplyId;
-        return null;
+        let label = null;
+        if(catalog === 'ingredient') label = (PRICE_BOOK[li.priceBookId] && PRICE_BOOK[li.priceBookId].label) || li.priceBookId;
+        if(catalog === 'supply') label = (SUPPLY_BOOK[li.supplyId] && SUPPLY_BOOK[li.supplyId].label) || li.newName || li.supplyId;
+        if(!label) return null;
+        // Older logged receipts (before qty/lineTotal were tracked) won't have these —
+        // fall back to just the label rather than showing "x null" or "$NaN".
+        const qtyPart = (li.qty!=null) ? ` x${li.qty}` : '';
+        const totalPart = (li.lineTotal!=null) ? ` (${money(li.lineTotal)})` : '';
+        return `${label}${qtyPart}${totalPart}`;
       }).filter(Boolean).join('; ');
       rows.push([dateStr, r.vendor, r.vendor, amount, '', r.category, '', '', itemSummary, ''].map(csvField).join(','));
     });

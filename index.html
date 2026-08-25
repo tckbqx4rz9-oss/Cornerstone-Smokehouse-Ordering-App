@@ -354,6 +354,15 @@
         <input type="number" id="guests" min="1" placeholder="e.g. 75">
       </div>
       <div class="field">
+        <label for="eventType">Event Type — how much guests tend to eat</label>
+        <select id="eventType">
+          <option value="standard" selected>Standard (default portions)</option>
+          <option value="social">Wedding / Funeral / Reception — lighter eating, more mingling</option>
+          <option value="mealFocused">Company Party / Picnic / BBQ — heavier eating, meal is the main event</option>
+        </select>
+        <div class="item-sub">Only affects quantities left on "auto" — anything you've typed an exact amount for is untouched. See the note by Food Cost Analysis for how these multipliers were set and how to adjust them as more events get logged.</div>
+      </div>
+      <div class="field">
         <label>Service Method</label>
         <div class="service-toggle">
           <button type="button" class="service-btn active" data-method="pickup" onclick="setServiceMethod('pickup')">Pickup</button>
@@ -554,6 +563,31 @@
 
 <script>
 /* ---------- menu data (matches current Cornerstone pricing) ---------- */
+// Event type affects how much guests actually eat, independent of headcount — catering
+// industry guidance is consistent on the DIRECTION (social/mingling events like weddings
+// and funerals get eaten through lightly since the meal isn't the point; events where the
+// meal IS the point, like a company picnic or work party, get eaten through hard) but
+// nobody publishes real multipliers for it, so these started from two of Brent's own real
+// events: a ~140-guest wedding planned for ~150 that came back with real leftovers across
+// nearly every item, and a ~110-person company party planned for roughly 125-150 that came
+// back with almost nothing left. Rather than set these to fully match what happened at
+// those two one-off events, they're deliberately split the difference toward the safe side —
+// erring toward too much rather than too little, since running short is worse than
+// leftovers. The "social" reduction is intentionally modest for that reason; the
+// "mealFocused" increase isn't tempered down the same way, since ordering more there only
+// ever helps. These are provisional starting points, not settled numbers — as more events
+// get logged through the tracker with an event type noted, nudge these toward the real
+// pattern (staying biased toward the generous side of whatever that turns out to be).
+const EVENT_TYPE_MULTIPLIERS = {
+  standard:    1.00,
+  social:      0.90, // wedding / funeral / reception — mingling-focused, lighter eating (modest cut, biased safe)
+  mealFocused: 1.20  // company party / picnic / BBQ — meal is the main event, heavier eating
+};
+const EVENT_TYPE_LABELS = {
+  standard:    'Standard',
+  social:      'Wedding/Funeral/Reception',
+  mealFocused: 'Company Party/Picnic'
+};
 const MEATS = [
   {key:'brisket', name:'Texas-Style Beef Brisket', price:30.99, min:6, cookedLbPerPerson:0.20, avgPieceLb:16, cookHrPerLb:22/18, restMin:75, panLb:16, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.50}, // avgPieceLb corrected to the real ~16lb wet weight; cookHrPerLb rate left as-is (still ~1.22hr/lb), so total smoke time scales down proportionally to ~19.6hr instead of 22hr
   {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, avgPieceLb:18, cookHrPerLb:18/18, restMin:60, panLb:18, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.55},
@@ -773,9 +807,9 @@ const MAC_RECIPE = {
   velveetaOzPerBatch: 16, // diced small
   cheddarCupPerBatch: 2, // shredded medium cheddar (Tillamook)
   prepMin: 20, // cook macaroni, mix filling, assemble pan
-  cookMin: 45, // bake at 350°F to 165° internal
+  cookMin: 90, // bake at 350°F to 165° internal — a single normal batch usually runs ~60 min (the old 45-min number was just a doneness-check placeholder, not the real finish time); a big multi-pan event batch ran 1.5 hrs, so 90 is set to the generous/event-scale end rather than the single-pan baseline
   bakeAhead: true, // baked the day before, reheated on serve day (oven can't run two things at once)
-  reheatMin: 30,
+  reheatMin: 120, // real event data: reheated tented at 175°F for ~2 hrs after an overnight refrigeration, not a quick 30-min reheat
   costs: {
     macaroniOzPerBatch: () => priceBookRate('macaroni'),
     eggsPerBatch: () => priceBookRate('eggs'),
@@ -822,7 +856,7 @@ const ROLLS_RECIPE = {
   overnightMin: 5, // Day 1: place frozen rolls on sheet, cover, refrigerate
   coatMin: 15, // Day 2: melt butter, mix in cheese/garlic, roll each roll in butter mixture
   riseMin: 120, // let rise ~2 hr or until doubled
-  bakeMin: 15, // bake at 375°F — recipe says 13 min but notes it can run past 20
+  bakeMin: 28, // bake at 375°F — real event data: 2 pans took 26-30 min, well past the old 13-15 min estimate
   bakeAhead: true, // baked the day before, reheated on serve day (oven can't run two things at once)
   reheatMin: 10,
   costs: {
@@ -1076,6 +1110,14 @@ function doRunCalc(){
   }
 
   const guests = (guestsVal && parseInt(guestsVal)>0) ? parseInt(guestsVal) : null;
+  const eventTypeVal = document.getElementById('eventType').value;
+  const eventTypeMultiplier = EVENT_TYPE_MULTIPLIERS[eventTypeVal] !== undefined ? EVENT_TYPE_MULTIPLIERS[eventTypeVal] : 1.0;
+  // Appetite-adjusted guest count — used only for "auto" mode food quantities and the
+  // "not enough food" coverage warnings, so a wedding intentionally portioned lighter
+  // doesn't get flagged as short, and a company party portioned heavier doesn't look like
+  // it has more slack than it really does. Real headcount (guests) still drives staffing
+  // fees, plates/napkins, and tables — every seat needs one of those regardless of appetite.
+  const adjGuests = guests===null ? null : guests*eventTypeMultiplier;
 
   if(serviceMethod==='served' && guests===null){
     showFormError('Enter a guest count to calculate the full-service staffing fee.');
@@ -1122,7 +1164,7 @@ function doRunCalc(){
       cookedLbs = Math.max(0, fieldVal ? Math.round(parseFloat(fieldVal)) : 0);
     } else {
       const rate = fieldVal ? parseFloat(fieldVal) : m.cookedLbPerPerson;
-      cookedLbs = roundUp(rate*guests, 1);
+      cookedLbs = roundUp(rate*adjGuests, 1);
     }
     const finalCookedLbs = Math.max(cookedLbs, m.min);
     const buyLbs = Math.ceil(finalCookedLbs / m.cookedYieldPct); // raw purchase weight, shopping-list only
@@ -1158,7 +1200,7 @@ function doRunCalc(){
       birds = Math.max(1, Math.round(fieldVal ? parseFloat(fieldVal) : 1));
     } else {
       const rate = fieldVal ? parseFloat(fieldVal) : t.cookedLbPerPerson;
-      const rawBirds = (rate*guests)/(t.avgBirdLb*t.cookedYieldPct);
+      const rawBirds = (rate*adjGuests)/(t.avgBirdLb*t.cookedYieldPct);
       birds = Math.max(1, Math.ceil(rawBirds));
     }
     const cost = birds*t.price*MARKUP;
@@ -1197,7 +1239,7 @@ function doRunCalc(){
       racks = Math.max(1, Math.round(fieldVal ? parseFloat(fieldVal) : 1));
     } else {
       const rate = fieldVal ? parseFloat(fieldVal) : r.racksPerPerson;
-      racks = Math.max(1, Math.ceil(rate*guests));
+      racks = Math.max(1, Math.ceil(rate*adjGuests));
     }
     const cost = racks*r.fullPrice*MARKUP;
     orderTotal += cost;
@@ -1220,7 +1262,7 @@ function doRunCalc(){
     if(itemModes[s.key]==='exact'){
       pans = Math.max(1, Math.round(fieldVal ? parseFloat(fieldVal) : 1));
     } else {
-      pans = Math.max(1, Math.ceil(guests/s.servesPerPan));
+      pans = Math.max(1, Math.ceil(adjGuests/s.servesPerPan));
     }
     const cost = pans*s.price*MARKUP;
     orderTotal += cost;
@@ -1335,7 +1377,7 @@ function doRunCalc(){
     if(itemModes.bakedpotato==='exact'){
       potatoCount = Math.max(1, Math.round(fieldVal ? parseFloat(fieldVal) : BAKED_POTATO.packSize));
     } else {
-      potatoCount = guests*BAKED_POTATO.ratePerPerson;
+      potatoCount = adjGuests*BAKED_POTATO.ratePerPerson;
     }
     const packs = Math.max(1, Math.ceil(potatoCount/BAKED_POTATO.packSize));
     const finalCount = packs*BAKED_POTATO.packSize;
@@ -1355,7 +1397,7 @@ function doRunCalc(){
     if(itemModes.cornbread==='exact'){
       pans = Math.max(1, Math.round(fieldVal ? parseFloat(fieldVal) : 1));
     } else {
-      pans = Math.max(1, Math.ceil(guests/CORNBREAD.servesPerPan));
+      pans = Math.max(1, Math.ceil(adjGuests/CORNBREAD.servesPerPan));
     }
     const cost = pans*CORNBREAD.price*MARKUP;
     orderTotal += cost;
@@ -1392,7 +1434,7 @@ function doRunCalc(){
       packs = Math.max(1, Math.round(fieldVal ? parseFloat(fieldVal) : 1));
     } else {
       const perPerson = b.perPerson || 1;
-      const needed = Math.ceil(guests*perPerson);
+      const needed = Math.ceil(adjGuests*perPerson);
       packs = Math.max(1, Math.ceil(needed/b.packSize));
     }
     const finalCount = packs*b.packSize;
@@ -1594,17 +1636,22 @@ function doRunCalc(){
     cursor = new Date(start.getTime() + t.durationMin*60000);
   });
 
-  // category-level "not enough food" warnings, based on the total of each category vs guest count
+  // category-level "not enough food" warnings — compared against the appetite-adjusted
+  // guest count (adjGuests), not the raw headcount, so a wedding intentionally portioned
+  // lighter for lighter eaters doesn't get flagged as short just because it ordered less
+  // per head than a standard event would.
   const categoryWarnings = [];
   if(guests){
-    if(meatChecked && meatCapacity < guests){
-      categoryWarnings.push(`Heads up — total meat ordered covers an estimated ${Math.floor(meatCapacity)} of your ${guests} guests.`);
+    const targetGuests = Math.round(adjGuests);
+    const adjNote = eventTypeMultiplier!==1 ? ` (${targetGuests} adjusted for this event type)` : '';
+    if(meatChecked && meatCapacity < adjGuests){
+      categoryWarnings.push(`Heads up — total meat ordered covers an estimated ${Math.floor(meatCapacity)} of your ${guests} guests${adjNote}.`);
     }
-    if(sideChecked && sideCapacity < guests){
-      categoryWarnings.push(`Heads up — total sides ordered cover an estimated ${Math.floor(sideCapacity)} of your ${guests} guests.`);
+    if(sideChecked && sideCapacity < adjGuests){
+      categoryWarnings.push(`Heads up — total sides ordered cover an estimated ${Math.floor(sideCapacity)} of your ${guests} guests${adjNote}.`);
     }
-    if(breadChecked && breadCapacity < guests){
-      categoryWarnings.push(`Heads up — total bread ordered covers an estimated ${Math.floor(breadCapacity)} of your ${guests} guests.`);
+    if(breadChecked && breadCapacity < adjGuests){
+      categoryWarnings.push(`Heads up — total bread ordered covers an estimated ${Math.floor(breadCapacity)} of your ${guests} guests${adjNote}.`);
     }
   }
 
@@ -1670,7 +1717,7 @@ function doRunCalc(){
     };
   }
 
-  lastPlan = {guests, serveDT, plateBuffer, setupBuffer, jobsiteAddress, serviceMethod, deliveryFeeApplied:false, lineItems, cookItems, recipeItems, meatCostItems, trackItems, shopLines, orderTotal, meatPans, sidePans, travel:null, categoryWarnings, invoiceNum:null, orderNum:nextOrderNumber(), rubInfo, turkeySeasoningInfo, turkeyOilInfo, woodChipsInfo};
+  lastPlan = {guests, eventType:eventTypeVal, eventTypeMultiplier, serveDT, plateBuffer, setupBuffer, jobsiteAddress, serviceMethod, deliveryFeeApplied:false, lineItems, cookItems, recipeItems, meatCostItems, trackItems, shopLines, orderTotal, meatPans, sidePans, travel:null, categoryWarnings, invoiceNum:null, orderNum:nextOrderNumber(), rubInfo, turkeySeasoningInfo, turkeyOilInfo, woodChipsInfo};
   renderResults(lastPlan);
   document.getElementById('results').style.display='block';
   document.getElementById('results').scrollIntoView({behavior:'smooth'});
@@ -2085,7 +2132,7 @@ async function saveEventResults(){
     const consumedForRate = (reg && reg.yield) ? consumed*reg.yield : consumed; // raw -> cooked-equivalent for meats/turkey
     return {key:t.key, name:reg ? reg.name : t.key, unit:reg ? reg.unit : '', ordered:t.ordered, leftover, consumed, actualRate: consumedForRate/plan.guests, defaultRate: reg ? reg.get() : null};
   });
-  const record = {id:Date.now(), eventName, eventDate:plan.serveDT.toISOString(), guests:plan.guests, items};
+  const record = {id:Date.now(), eventName, eventDate:plan.serveDT.toISOString(), guests:plan.guests, eventType:plan.eventType||'standard', items};
   try{
     const result = await window.storage.set('event:'+record.id, JSON.stringify(record), false);
     if(!result){ throw new Error('save returned no result'); }
@@ -2128,7 +2175,8 @@ async function loadHistory(){
     html += `<ul class="shop-list">`;
     records.slice(0,10).forEach(rec=>{
       const d = new Date(rec.eventDate);
-      html += `<li><span>${rec.eventName} — ${fmtDay(d)}</span><span>${rec.guests} guests</span></li>`;
+      const typeLabel = EVENT_TYPE_LABELS[rec.eventType] || 'Standard';
+      html += `<li><span>${rec.eventName} — ${fmtDay(d)}${rec.eventType && rec.eventType!=='standard' ? ` <span class="item-sub">(${typeLabel})</span>` : ''}</span><span>${rec.guests} guests</span></li>`;
     });
     html += `</ul>`;
 

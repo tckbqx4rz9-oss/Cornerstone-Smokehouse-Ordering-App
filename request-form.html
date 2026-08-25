@@ -367,10 +367,11 @@ function calculateQuote(){
     });
 
     const actualMeatTotal = Object.values(finalLbs).reduce((s,v)=>s+v, 0);
-    if(auto.length === 0 && Math.abs(actualMeatTotal - targetTotal) >= 1){
-      // every meat was manually pinned, so there's nothing left to auto-adjust —
-      // surface the gap instead of silently serving less (or more) than the guest count implies
-      meatBudgetNote = `Heads up — with the amounts you've entered, total meat comes to ${Math.round(actualMeatTotal)} lb. For ${guests} guests across these meats we'd typically plan around ${Math.round(targetTotal)} lb. Adjust an amount above, or clear one back to blank to let it auto-fill the difference.`;
+    if(auto.length === 0 && (targetTotal - actualMeatTotal) >= 1){
+      // every meat was manually pinned, so there's nothing left to auto-adjust — only warn
+      // when the total is running light for the guest count. Ordering extra is never flagged:
+      // leftovers are the safe direction, running short at the event is the actual risk.
+      meatBudgetNote = `Heads up — with the amounts you've entered, total meat comes to ${Math.round(actualMeatTotal)} lb, which is light for ${guests} guests (we'd typically plan around ${Math.round(targetTotal)} lb). Bump an amount above, or clear one back to blank to let it auto-fill the rest.`;
     }
 
     checkedMeats.forEach(m=>{

@@ -591,8 +591,8 @@ const EVENT_TYPE_LABELS = {
 const MEATS = [
   {key:'brisket', name:'Texas-Style Beef Brisket', price:30.99, min:6, cookedLbPerPerson:0.20, avgPieceLb:16, cookHrPerLb:22/18, restMin:75, panLb:16, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.50}, // avgPieceLb corrected to the real ~16lb wet weight; cookHrPerLb rate left as-is (still ~1.22hr/lb), so total smoke time scales down proportionally to ~19.6hr instead of 22hr
   {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, avgPieceLb:18, cookHrPerLb:18/18, restMin:60, panLb:18, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.55},
-  {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, cookHrFixed:2.5, restMin:60, panLb:10, twoDayPrep:true, prepStyle:'inject-only', cookedYieldPct:0.72}, // chicken doesn't get dry brined like brisket/pork/tri tip — Day 1 is just making the injection
-  {key:'tritip',  name:'Tri Tip',                    price:28.99, min:2, cookedLbPerPerson:0.23, cookHrFixed:2.5, restMin:60, limited:true, panLb:9, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.75}
+  {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, cookHrFixed:4.0, restMin:60, panLb:10, twoDayPrep:true, prepStyle:'inject-only', cookedYieldPct:0.72}, // chicken doesn't get dry brined like brisket/pork/tri tip — Day 1 is just making the injection. cookHrFixed 2.5->4.0: wedding event ran 1.5hr @225°F + 1hr cranked to 350°F to finish on time (2.5hr total) and still overshot the pull point badly (carried 147°F->180°F); estimated a steady 225°F on the big smoker the whole way would run ~4hrs for this load, which also avoids the high-heat carryover overshoot — the small smoker (brisket only) isn't affected by this change
+  {key:'tritip',  name:'Tri Tip',                    price:28.99, min:2, cookedLbPerPerson:0.23, cookHrFixed:4.0, restMin:60, limited:true, panLb:9, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.75} // cookHrFixed 2.5->4.0, matching chicken's bump to a steady-225°F planning estimate instead of a hotter finish
 ];
 // Maps each MEATS key to its raw (as-purchased) cost source in PRICE_BOOK, for Meat
 // Cost Analysis below. null = no real $/lb purchase cost tracked yet — shows as "not
@@ -696,7 +696,9 @@ const PRICE_BOOK = {
   onionPowder:      { label:"Onion Powder (Monarch)", price:11.89, size:22, unit:'oz', ozPerCup:5.4 },
   cayenne:          { label:"Cayenne (McCormick)", price:13.09, size:14, unit:'oz', ozPerCup:3.9 },
   cavenders:        { label:"Cavender's Greek Seasoning", price:0.55, size:1, unit:'oz', ozPerCup:6 }, // $0.55/oz confirmed; density is a seasoned-salt-blend estimate — verify against your own measured cup weight
-  knorrContainer:   { label:"Knorr Chicken Base (16oz container)", price:13.5, size:1, unit:'container' },
+  knorrContainer:   { label:"Knorr Chicken Base (16oz container)", price:13.19, size:1, unit:'container' },
+  knorrBeefBase:    { label:"Knorr Beef Base (16oz container)", price:13.39, size:1, unit:'container' },
+  auJus:            { label:"Au Jus Base (6 lb container, dry)", price:26.09, size:96, unit:'oz', ozPerCup:6.2 }, // sold by weight (6lb=96oz), a dry base/granules, not a liquid — ozPerCup confirmed from your own measured weight (3.1oz per 1/2 cup)
   appleJuice:       { label:"Great Value Frozen Apple Juice Concentrate (12floz can)", price:1.86, size:1, unit:'can' },
   iceBag:           { label:"Reddy Ice (5-10lb small bag)", price:2.33, size:1, unit:'bag' },
   fryingOil:        { label:"Harvest Value Clear Vegetable Frying Oil (35lb jug)", price:41.79, size:1, unit:'jug' },
@@ -900,6 +902,29 @@ const TURKEY_SEASONING_RECIPE = {
     saltCupPerBird: () => priceBookRate('tableSalt','cup'),
     appleJuiceCansPerBird: () => priceBookRate('appleJuice'),
     iceBagsPerBird: () => priceBookRate('iceBag')
+  }
+};
+// By-the-pound meat injections — same 8qt-water-per-container mix ratio as turkey, but scaled by
+// raw purchase lb (buyLbs) instead of bird count, since these aren't sold as whole units. Rates
+// below are derived from real usage: 20 lb chicken -> 1 container; 2 pork shoulders (~18 lb each,
+// ~36 lb total) -> 1 container; 1 whole brisket (avgPieceLb 16) -> 1 container + 1/2 cup Au Jus.
+// Tri tip isn't included yet — no injection recipe given for it.
+const MEAT_INJECTION_RECIPE = {
+  chicken: {
+    containersPerLb: 1/20,
+    costs: { containersPerLb: () => priceBookRate('knorrContainer') }
+  },
+  pork: {
+    containersPerLb: 0.5/18,
+    costs: { containersPerLb: () => priceBookRate('knorrContainer') }
+  },
+  brisket: {
+    containersPerLb: 1/16,
+    auJusCupPerLb: 0.5/16,
+    costs: {
+      containersPerLb: () => priceBookRate('knorrBeefBase'),
+      auJusCupPerLb: () => priceBookRate('auJus','cup')
+    }
   }
 };
 const TURKEY_OIL_RECIPE = {
@@ -1149,6 +1174,7 @@ function doRunCalc(){
   let turkeyBirdsTotal = 0; // total whole birds across all turkey styles, used to scale the turkey rub/injection/brine
   let friedTurkeyBirdsTotal = 0; // birds that actually touch the fryer (smofried + deep fried), used to scale oil cost
   let smokedMeatTypesCount = 0; // count of distinct meat/rib/turkey types that actually touch the smoker, used to scale wood chip usage
+  const meatInjectionLbs = {}; // raw buyLbs per MEATS key, for meats with a tracked injection recipe (see MEAT_INJECTION_RECIPE)
 
   // category-level serving capacity, used for the "not enough food" warnings below
   let meatCapacity = 0, meatChecked = false;
@@ -1179,6 +1205,7 @@ function doRunCalc(){
     rubMeatLb += buyLbs;
     smokedMeatTypesCount++;
     trackItems.push({key:m.key, ordered:buyLbs});
+    if(MEAT_INJECTION_RECIPE[m.key]) meatInjectionLbs[m.key] = (meatInjectionLbs[m.key]||0) + buyLbs;
 
     const rawKey = MEAT_RAW_COST_KEY[m.key];
     const rawRate = rawKey ? priceBookRate(rawKey, 'lb') : null; // $ per raw/as-purchased lb
@@ -1697,6 +1724,23 @@ function doRunCalc(){
     };
   }
 
+  // by-the-pound meat injections (chicken/pork/brisket) — one entry per checked meat that has
+  // a tracked recipe in MEAT_INJECTION_RECIPE, scaled off its raw buyLbs for the event
+  const meatInjectionInfo = [];
+  Object.keys(meatInjectionLbs).forEach(key=>{
+    const r = MEAT_INJECTION_RECIPE[key];
+    const lbs = meatInjectionLbs[key];
+    const meatDef = MEATS.find(m=>m.key===key);
+    const ci = computeRecipeCost(r, lbs);
+    const info = {
+      key, name: meatDef.name, buyLbs: lbs,
+      ingredientCost: ci.cost, costsKnown: ci.known, costsTotal: ci.total,
+      containers: r.containersPerLb*lbs
+    };
+    if(r.auJusCupPerLb) info.auJusCups = r.auJusCupPerLb*lbs;
+    meatInjectionInfo.push(info);
+  });
+
   let turkeyOilInfo = null;
   if(friedTurkeyBirdsTotal > 0){
     const r = TURKEY_OIL_RECIPE;
@@ -1717,7 +1761,7 @@ function doRunCalc(){
     };
   }
 
-  lastPlan = {guests, eventType:eventTypeVal, eventTypeMultiplier, serveDT, plateBuffer, setupBuffer, jobsiteAddress, serviceMethod, deliveryFeeApplied:false, lineItems, cookItems, recipeItems, meatCostItems, trackItems, shopLines, orderTotal, meatPans, sidePans, travel:null, categoryWarnings, invoiceNum:null, orderNum:nextOrderNumber(), rubInfo, turkeySeasoningInfo, turkeyOilInfo, woodChipsInfo};
+  lastPlan = {guests, eventType:eventTypeVal, eventTypeMultiplier, serveDT, plateBuffer, setupBuffer, jobsiteAddress, serviceMethod, deliveryFeeApplied:false, lineItems, cookItems, recipeItems, meatCostItems, trackItems, shopLines, orderTotal, meatPans, sidePans, travel:null, categoryWarnings, invoiceNum:null, orderNum:nextOrderNumber(), rubInfo, turkeySeasoningInfo, meatInjectionInfo, turkeyOilInfo, woodChipsInfo};
   renderResults(lastPlan);
   document.getElementById('results').style.display='block';
   document.getElementById('results').scrollIntoView({behavior:'smooth'});
@@ -1737,24 +1781,27 @@ function renderTimeline(plan){
   let tl = '';
   const cookEvents = [];
 
-  // All grocery shopping happens in one trip, not once per meat — one consolidated Grocery
-  // Shopping entry, ending right before whichever item's own dry brine/injection prep needs
-  // to start first, instead of a separate "Purchase Meat & ..." entry per two-day-prep item.
+  // Day 1 is one simple errand-and-prep day, not a string of separately timed tasks: a single
+  // "Grocery Shopping Day" entry covers buying the meat plus whatever dry-brining/injection-making
+  // needs to happen that same day, instead of a separate timestamped event per meat.
   const day1Deadlines = plan.cookItems.filter(c=>c.twoDayPrep).map(c=>c.day1Start.getTime());
   if(day1Deadlines.length){
     const earliestDay1 = new Date(Math.min(...day1Deadlines));
-    cookEvents.push({t:new Date(earliestDay1.getTime() - 90*60000), label:'Grocery Shopping — buy all meat for the event'});
+    const needsBrine = plan.cookItems.some(c=>c.twoDayPrep && (c.prepStyle==='salt' || c.prepStyle==='inject'));
+    const needsInjection = plan.cookItems.some(c=>c.twoDayPrep && (c.prepStyle==='inject' || c.prepStyle==='inject-only'));
+    let day1Label = 'Grocery Shopping Day — buy all meat';
+    if(needsBrine && needsInjection) day1Label += ', dry brine, and make injections';
+    else if(needsBrine) day1Label += ' and dry brine';
+    else if(needsInjection) day1Label += ' and make injections';
+    cookEvents.push({t:earliestDay1, label:day1Label});
   }
 
   plan.cookItems.forEach(c=>{
     if(c.twoDayPrep && c.prepStyle==='salt'){
-      cookEvents.push({t:c.day1Start, label:`Dry Brine ${c.name}`});
       cookEvents.push({t:c.day2Start, label:`Rub ${c.name}`});
     } else if(c.twoDayPrep && c.prepStyle==='inject-only'){
-      cookEvents.push({t:c.day1Start, label:`Make injection for ${c.name}`});
       cookEvents.push({t:c.day2Start, label:`Inject &amp; rub ${c.name}`});
     } else if(c.twoDayPrep){
-      cookEvents.push({t:c.day1Start, label:`Dry Brine ${c.name}, make injection`});
       cookEvents.push({t:c.day2Start, label:`Inject &amp; rub ${c.name}`});
     } else {
       cookEvents.push({t:c.prepStart, label:`Trim &amp; rub ${c.name}`});
@@ -1929,6 +1976,18 @@ function renderResults(plan){
     sh += `<li><span>Concentrated apple juice (can)</span><span>${ts.appleJuiceCans} can${ts.appleJuiceCans>1?'s':''}</span></li>`;
     sh += `<li><span>Ice (bag)</span><span>${ts.iceBags} bag${ts.iceBags>1?'s':''}</span></li>`;
     sh += `</ul><div class="note">Rub Cavender's over the bird. Mix each container of Knorr base with 8 qt water to make prepared broth (yields ${ts.brothQuarts.toFixed(1)} qt total); inject 4 qt per bird.</div>`;
+  }
+  if(plan.meatInjectionInfo && plan.meatInjectionInfo.length){
+    plan.meatInjectionInfo.forEach(mi=>{
+      sh += `<div class="shop-cat">${mi.name} Injection — ${mi.buyLbs} lb</div><ul class="shop-list">`;
+      const knorrLabel = mi.key==='brisket' ? 'Knorr Beef Base (16 oz container)' : 'Knorr Roasted Chicken Base (16 oz container)';
+      sh += `<li><span>${knorrLabel}</span><span>${mi.containers.toFixed(2)} containers</span></li>`;
+      sh += `<li><span>Water, for prepared injection</span><span>${(mi.containers*8).toFixed(1)} qt (8 qt per container)</span></li>`;
+      if(mi.auJusCups !== undefined){
+        sh += `<li><span>Au Jus</span><span>${mi.auJusCups.toFixed(2)} cups</span></li>`;
+      }
+      sh += `</ul><div class="note">Mix each container with 8 qt water${mi.auJusCups!==undefined?' plus the Au Jus':''} to make the injection.</div>`;
+    });
   }
   if(plan.turkeyOilInfo){
     const to = plan.turkeyOilInfo;
@@ -2399,25 +2458,27 @@ function downloadICS(){
   const plan = lastPlan;
   const evs = [];
 
-  // All grocery shopping happens in one trip, not once per meat — so instead of a separate
-  // "Purchase Meat & ..." event per two-day-prep item, add a single Grocery Shopping event
-  // sized to end right when the earliest item's own prep (dry brine / injection) needs to
-  // start, then drop the purchase wording from those per-item events below.
+  // Day 1 is one simple errand-and-prep day, not a string of separately timed tasks: a single
+  // "Grocery Shopping Day" event covers buying the meat plus whatever dry-brining/injection-making
+  // needs to happen that same day, instead of a separate timestamped event per meat.
   const day1Deadlines = plan.cookItems.filter(c=>c.twoDayPrep).map(c=>c.day1Start.getTime());
   if(day1Deadlines.length){
     const earliestDay1 = new Date(Math.min(...day1Deadlines));
-    evs.push({start:new Date(earliestDay1.getTime() - 90*60000), minutes:90, title:'Cornerstone: Grocery Shopping — buy all meat for the event'});
+    const needsBrine = plan.cookItems.some(c=>c.twoDayPrep && (c.prepStyle==='salt' || c.prepStyle==='inject'));
+    const needsInjection = plan.cookItems.some(c=>c.twoDayPrep && (c.prepStyle==='inject' || c.prepStyle==='inject-only'));
+    let day1Label = 'Cornerstone: Grocery Shopping Day — buy all meat';
+    if(needsBrine && needsInjection) day1Label += ', dry brine, and make injections';
+    else if(needsBrine) day1Label += ' and dry brine';
+    else if(needsInjection) day1Label += ' and make injections';
+    evs.push({start:earliestDay1, minutes:180, title:day1Label});
   }
 
   plan.cookItems.forEach(c=>{
     if(c.twoDayPrep && c.prepStyle==='salt'){
-      evs.push({start:c.day1Start, minutes:60, title:`Cornerstone: Dry Brine ${c.name}`});
       evs.push({start:c.day2Start, minutes:60, title:`Cornerstone: Rub ${c.name}`});
     } else if(c.twoDayPrep && c.prepStyle==='inject-only'){
-      evs.push({start:c.day1Start, minutes:60, title:`Cornerstone: Make injection for ${c.name}`});
       evs.push({start:c.day2Start, minutes:60, title:`Cornerstone: Inject & rub ${c.name}`});
     } else if(c.twoDayPrep){
-      evs.push({start:c.day1Start, minutes:60, title:`Cornerstone: Dry Brine ${c.name}, make injection`});
       evs.push({start:c.day2Start, minutes:60, title:`Cornerstone: Inject & rub ${c.name}`});
     } else {
       evs.push({start:c.prepStart, minutes:60, title:`Cornerstone: Trim & rub ${c.name}`});

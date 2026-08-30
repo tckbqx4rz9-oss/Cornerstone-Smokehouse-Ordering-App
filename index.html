@@ -363,6 +363,15 @@
         <div class="item-sub">Only affects quantities left on "auto" — anything you've typed an exact amount for is untouched. See the note by Food Cost Analysis for how these multipliers were set and how to adjust them as more events get logged.</div>
       </div>
       <div class="field">
+        <label for="children">Children in Guest Count (ages 0-12)</label>
+        <input type="number" id="children" min="0" placeholder="e.g. 20">
+        <div class="item-sub">Optional — kids eat roughly half an adult's portion of meat and most sides, but count the same as adults for Mac &amp; Cheese (often their main course). Leave blank if you don't have a breakdown.</div>
+      </div>
+      <div class="field">
+        <label class="toggle-row"><input type="checkbox" id="potluckMode"><span>Potluck-style (guests also bringing their own sides/desserts)</span></label>
+        <div class="item-sub">Reduces auto-mode meat and side quantities, since guests fill up on outside food too — doesn't reduce Mac &amp; Cheese, which held its own even at a potluck event.</div>
+      </div>
+      <div class="field">
         <label>Service Method</label>
         <div class="service-toggle">
           <button type="button" class="service-btn active" data-method="pickup" onclick="setServiceMethod('pickup')">Pickup</button>
@@ -588,10 +597,25 @@ const EVENT_TYPE_LABELS = {
   social:      'Wedding/Funeral/Reception',
   mealFocused: 'Company Party/Picnic'
 };
+// Guest-composition adjustments — independent of Event Type, and independent of each other.
+// CHILD_MEAT_FRACTION: standard catering rule of thumb is kids (0-12) eat roughly half an
+// adult portion ("count two kids as one adult") — applied to meat/turkey/ribs/generic sides/
+// bread/baked potatoes/cornbread. CHILD_MAC_FRACTION is deliberately NOT discounted the same
+// way: at the one potluck event this was logged from (90 guests, 50 of them kids), Mac &
+// Cheese sold out despite being potluck while overall meat ran light — kids clearly treat it
+// as their main course rather than a side, so they're counted the same as adults for it.
+// POTLUCK_MULTIPLIER only applies to the child-discounted items, not Mac & Cheese, for the
+// same reason. Backed out from that same event: after accounting for the child mix, actual
+// meat consumption was ~79% of the event-type-adjusted target — rounded to 0.80 here with a
+// small buffer kept on the generous side, consistent with never wanting to run short. Both
+// are first-pass numbers from a single event — refine as more potluck/mixed-age events get logged.
+const CHILD_MEAT_FRACTION = 0.5;
+const CHILD_MAC_FRACTION = 1.0;
+const POTLUCK_MULTIPLIER = 0.80;
 const MEATS = [
   {key:'brisket', name:'Texas-Style Beef Brisket', price:30.99, min:6, cookedLbPerPerson:0.20, avgPieceLb:16, cookHrPerLb:22/18, restMin:75, panLb:16, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.50}, // avgPieceLb corrected to the real ~16lb wet weight; cookHrPerLb rate left as-is (still ~1.22hr/lb), so total smoke time scales down proportionally to ~19.6hr instead of 22hr
-  {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, avgPieceLb:18, cookHrPerLb:18/18, restMin:60, panLb:18, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.55},
-  {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, cookHrFixed:4.0, restMin:60, panLb:10, twoDayPrep:true, prepStyle:'inject-only', cookedYieldPct:0.72}, // chicken doesn't get dry brined like brisket/pork/tri tip — Day 1 is just making the injection. cookHrFixed 2.5->4.0: wedding event ran 1.5hr @225°F + 1hr cranked to 350°F to finish on time (2.5hr total) and still overshot the pull point badly (carried 147°F->180°F); estimated a steady 225°F on the big smoker the whole way would run ~4hrs for this load, which also avoids the high-heat carryover overshoot — the small smoker (brisket only) isn't affected by this change
+  {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, avgPieceLb:18, cookHrPerLb:18/18, restMin:60, panLb:18, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.80}, // cookedYieldPct 0.55->0.80: real weigh-in from a picnic event — 4 bone-in shoulders, 43 lb purchased -> 34.4375 lb pulled/bone-out (80.09%, rounded to 0.80) — confirmed as his normal injection process, not a one-off, so the app's number now matches reality instead of assuming much more loss than actually happens
+  {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, cookHrFixed:4.0, restMin:60, panLb:10, twoDayPrep:true, prepStyle:'inject-only', cookedYieldPct:0.78}, // chicken doesn't get dry brined like brisket/pork/tri tip — Day 1 is just making the injection. cookedYieldPct 0.72->0.78: chicken gets injected same as pork, and a real picnic's pork batch (same injection technique) came back at ~80% yield — pork's own number was updated to match (see the pork entry above); chicken kept a bit more modest since there's no real chicken weigh-in yet, just the same-technique inference. cookHrFixed 2.5->4.0: wedding event ran 1.5hr @225°F + 1hr cranked to 350°F to finish on time (2.5hr total) and still overshot the pull point badly (carried 147°F->180°F); estimated a steady 225°F on the big smoker the whole way would run ~4hrs for this load, which also avoids the high-heat carryover overshoot — the small smoker (brisket only) isn't affected by this change
   {key:'tritip',  name:'Tri Tip',                    price:28.99, min:2, cookedLbPerPerson:0.23, cookHrFixed:4.0, restMin:60, limited:true, panLb:9, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.75} // cookHrFixed 2.5->4.0, matching chicken's bump to a steady-225°F planning estimate instead of a hotter finish
 ];
 // Maps each MEATS key to its raw (as-purchased) cost source in PRICE_BOOK, for Meat
@@ -1137,12 +1161,22 @@ function doRunCalc(){
   const guests = (guestsVal && parseInt(guestsVal)>0) ? parseInt(guestsVal) : null;
   const eventTypeVal = document.getElementById('eventType').value;
   const eventTypeMultiplier = EVENT_TYPE_MULTIPLIERS[eventTypeVal] !== undefined ? EVENT_TYPE_MULTIPLIERS[eventTypeVal] : 1.0;
+  const childrenVal = document.getElementById('children').value;
+  const children = (guests!==null && childrenVal) ? Math.max(0, Math.min(guests, parseInt(childrenVal))) : 0;
+  const adults = guests===null ? null : guests - children;
+  const potluckMode = document.getElementById('potluckMode').checked;
   // Appetite-adjusted guest count — used only for "auto" mode food quantities and the
   // "not enough food" coverage warnings, so a wedding intentionally portioned lighter
   // doesn't get flagged as short, and a company party portioned heavier doesn't look like
   // it has more slack than it really does. Real headcount (guests) still drives staffing
   // fees, plates/napkins, and tables — every seat needs one of those regardless of appetite.
-  const adjGuests = guests===null ? null : guests*eventTypeMultiplier;
+  // Two independent adjustments layer on top of Event Type: kids (0-12) count as half an
+  // adult for most food, and potluck-style events get an extra reduction since guests fill up
+  // on outside sides too. Mac & Cheese gets its own version of both (adjGuestsMac) — kids count
+  // as full adults for it, and potluck doesn't reduce it — since it acts as their main course
+  // and held demand even at a potluck event. See the comment above CHILD_MEAT_FRACTION for detail.
+  const adjGuests = guests===null ? null : (adults + children*CHILD_MEAT_FRACTION) * eventTypeMultiplier * (potluckMode ? POTLUCK_MULTIPLIER : 1);
+  const adjGuestsMac = guests===null ? null : (adults + children*CHILD_MAC_FRACTION) * eventTypeMultiplier;
 
   if(serviceMethod==='served' && guests===null){
     showFormError('Enter a guest count to calculate the full-service staffing fee.');
@@ -1289,7 +1323,8 @@ function doRunCalc(){
     if(itemModes[s.key]==='exact'){
       pans = Math.max(1, Math.round(fieldVal ? parseFloat(fieldVal) : 1));
     } else {
-      pans = Math.max(1, Math.ceil(adjGuests/s.servesPerPan));
+      const g = s.key==='mac' ? adjGuestsMac : adjGuests; // Mac & Cheese uses its own kid/potluck adjustment — see comment above CHILD_MEAT_FRACTION
+      pans = Math.max(1, Math.ceil(g/s.servesPerPan));
     }
     const cost = pans*s.price*MARKUP;
     orderTotal += cost;
@@ -1761,7 +1796,7 @@ function doRunCalc(){
     };
   }
 
-  lastPlan = {guests, eventType:eventTypeVal, eventTypeMultiplier, serveDT, plateBuffer, setupBuffer, jobsiteAddress, serviceMethod, deliveryFeeApplied:false, lineItems, cookItems, recipeItems, meatCostItems, trackItems, shopLines, orderTotal, meatPans, sidePans, travel:null, categoryWarnings, invoiceNum:null, orderNum:nextOrderNumber(), rubInfo, turkeySeasoningInfo, meatInjectionInfo, turkeyOilInfo, woodChipsInfo};
+  lastPlan = {guests, children, adults, potluckMode, eventType:eventTypeVal, eventTypeMultiplier, serveDT, plateBuffer, setupBuffer, jobsiteAddress, serviceMethod, deliveryFeeApplied:false, lineItems, cookItems, recipeItems, meatCostItems, trackItems, shopLines, orderTotal, meatPans, sidePans, travel:null, categoryWarnings, invoiceNum:null, orderNum:nextOrderNumber(), rubInfo, turkeySeasoningInfo, meatInjectionInfo, turkeyOilInfo, woodChipsInfo};
   renderResults(lastPlan);
   document.getElementById('results').style.display='block';
   document.getElementById('results').scrollIntoView({behavior:'smooth'});
@@ -2191,7 +2226,7 @@ async function saveEventResults(){
     const consumedForRate = (reg && reg.yield) ? consumed*reg.yield : consumed; // raw -> cooked-equivalent for meats/turkey
     return {key:t.key, name:reg ? reg.name : t.key, unit:reg ? reg.unit : '', ordered:t.ordered, leftover, consumed, actualRate: consumedForRate/plan.guests, defaultRate: reg ? reg.get() : null};
   });
-  const record = {id:Date.now(), eventName, eventDate:plan.serveDT.toISOString(), guests:plan.guests, eventType:plan.eventType||'standard', items};
+  const record = {id:Date.now(), eventName, eventDate:plan.serveDT.toISOString(), guests:plan.guests, children:plan.children||0, potluckMode:!!plan.potluckMode, eventType:plan.eventType||'standard', items};
   try{
     const result = await window.storage.set('event:'+record.id, JSON.stringify(record), false);
     if(!result){ throw new Error('save returned no result'); }
@@ -2235,7 +2270,11 @@ async function loadHistory(){
     records.slice(0,10).forEach(rec=>{
       const d = new Date(rec.eventDate);
       const typeLabel = EVENT_TYPE_LABELS[rec.eventType] || 'Standard';
-      html += `<li><span>${rec.eventName} — ${fmtDay(d)}${rec.eventType && rec.eventType!=='standard' ? ` <span class="item-sub">(${typeLabel})</span>` : ''}</span><span>${rec.guests} guests</span></li>`;
+      const tags = [];
+      if(rec.eventType && rec.eventType!=='standard') tags.push(typeLabel);
+      if(rec.children) tags.push(`${rec.children} kids`);
+      if(rec.potluckMode) tags.push('potluck');
+      html += `<li><span>${rec.eventName} — ${fmtDay(d)}${tags.length ? ` <span class="item-sub">(${tags.join(', ')})</span>` : ''}</span><span>${rec.guests} guests</span></li>`;
     });
     html += `</ul>`;
 

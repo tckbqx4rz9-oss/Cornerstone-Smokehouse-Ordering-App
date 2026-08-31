@@ -199,8 +199,8 @@
 /* ---------- menu data (kept in sync with the internal planner) ---------- */
 const MEATS = [
   {key:'brisket', name:'Texas-Style Beef Brisket', price:30.99, min:6, cookedLbPerPerson:0.20, packageRawLb:16, packageLabel:'brisket', cookedYieldPct:0.50},
-  {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, packageRawLb:18, packageLabel:'bag', cookedYieldPct:0.55},
-  {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, packageRawLb:10, packageLabel:'bag', cookedYieldPct:0.72},
+  {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, packageRawLb:19, packageLabel:'bag', cookedYieldPct:0.80}, // cookedYieldPct 0.55->0.80: matches the real picnic weigh-in synced from the internal planner (index.html) — see that file for the full number. packageRawLb 18->19: his real per-bag weight is ~19lb, not 18 — synced from index.html's avgPieceLb correction
+  {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, packageRawLb:10, packageLabel:'bag', cookedYieldPct:0.78}, // 0.72->0.78: synced from the internal planner (index.html), same reasoning as pork above
   {key:'tritip',  name:'Tri Tip',                    price:28.99, min:2, cookedLbPerPerson:0.23, cookedYieldPct:0.75} // no standard package size on hand yet — auto-fill stays a plain lb number until we have one
 ];
 // Cooked-lb equivalent of one whole package (one brisket, one bag) — used to snap

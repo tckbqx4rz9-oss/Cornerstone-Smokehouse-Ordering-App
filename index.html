@@ -614,7 +614,7 @@ const CHILD_MAC_FRACTION = 1.0;
 const POTLUCK_MULTIPLIER = 0.80;
 const MEATS = [
   {key:'brisket', name:'Texas-Style Beef Brisket', price:30.99, min:6, cookedLbPerPerson:0.20, avgPieceLb:16, cookHrPerLb:22/18, restMin:75, panLb:16, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.50}, // avgPieceLb corrected to the real ~16lb wet weight; cookHrPerLb rate left as-is (still ~1.22hr/lb), so total smoke time scales down proportionally to ~19.6hr instead of 22hr
-  {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, avgPieceLb:18, cookHrPerLb:18/18, restMin:60, panLb:18, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.80}, // cookedYieldPct 0.55->0.80: real weigh-in from a picnic event — 4 bone-in shoulders, 43 lb purchased -> 34.4375 lb pulled/bone-out (80.09%, rounded to 0.80) — confirmed as his normal injection process, not a one-off, so the app's number now matches reality instead of assuming much more loss than actually happens
+  {key:'pork',    name:'Pulled Pork',               price:19.99, min:5, cookedLbPerPerson:0.22, avgPieceLb:19, cookHrPerLb:18/18, restMin:60, panLb:18, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.80}, // avgPieceLb 18->19 (his real per-bag weight); cookHrPerLb left as the flat 1hr/lb rate, so cook time scales to ~19hr for the corrected piece size. cookedYieldPct 0.55->0.80: real weigh-in from a picnic event — 4 bone-in shoulders, 43 lb purchased -> 34.4375 lb pulled/bone-out (80.09%, rounded to 0.80) — confirmed as his normal injection process, not a one-off, so the app's number now matches reality instead of assuming much more loss than actually happens
   {key:'chicken', name:'Smoked Chicken Breast',      price:20.99, min:3, cookedLbPerPerson:0.25, cookHrFixed:4.0, restMin:60, panLb:10, twoDayPrep:true, prepStyle:'inject-only', cookedYieldPct:0.78}, // chicken doesn't get dry brined like brisket/pork/tri tip — Day 1 is just making the injection. cookedYieldPct 0.72->0.78: chicken gets injected same as pork, and a real picnic's pork batch (same injection technique) came back at ~80% yield — pork's own number was updated to match (see the pork entry above); chicken kept a bit more modest since there's no real chicken weigh-in yet, just the same-technique inference. cookHrFixed 2.5->4.0: wedding event ran 1.5hr @225°F + 1hr cranked to 350°F to finish on time (2.5hr total) and still overshot the pull point badly (carried 147°F->180°F); estimated a steady 225°F on the big smoker the whole way would run ~4hrs for this load, which also avoids the high-heat carryover overshoot — the small smoker (brisket only) isn't affected by this change
   {key:'tritip',  name:'Tri Tip',                    price:28.99, min:2, cookedLbPerPerson:0.23, cookHrFixed:4.0, restMin:60, limited:true, panLb:9, twoDayPrep:true, prepStyle:'inject', cookedYieldPct:0.75} // cookHrFixed 2.5->4.0, matching chicken's bump to a steady-225°F planning estimate instead of a hotter finish
 ];
@@ -930,8 +930,8 @@ const TURKEY_SEASONING_RECIPE = {
 };
 // By-the-pound meat injections — same 8qt-water-per-container mix ratio as turkey, but scaled by
 // raw purchase lb (buyLbs) instead of bird count, since these aren't sold as whole units. Rates
-// below are derived from real usage: 20 lb chicken -> 1 container; 2 pork shoulders (~18 lb each,
-// ~36 lb total) -> 1 container; 1 whole brisket (avgPieceLb 16) -> 1 container + 1/2 cup Au Jus.
+// below are derived from real usage: 20 lb chicken -> 1 container; 2 pork shoulders (~19 lb each,
+// ~38 lb total) -> 1 container; 1 whole brisket (avgPieceLb 16) -> 1 container + 1/2 cup Au Jus.
 // Tri tip isn't included yet — no injection recipe given for it.
 const MEAT_INJECTION_RECIPE = {
   chicken: {
@@ -939,7 +939,7 @@ const MEAT_INJECTION_RECIPE = {
     costs: { containersPerLb: () => priceBookRate('knorrContainer') }
   },
   pork: {
-    containersPerLb: 0.5/18,
+    containersPerLb: 0.5/19, // 0.5/18 -> 0.5/19: matches avgPieceLb correction above (his real per-bag weight is ~19lb, not 18)
     costs: { containersPerLb: () => priceBookRate('knorrContainer') }
   },
   brisket: {

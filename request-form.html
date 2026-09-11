@@ -118,7 +118,8 @@
     <div class="card-body">
       <div class="field">
         <label for="eventName">Event / Client Name</label>
-        <input type="text" id="eventName" placeholder="e.g. Miller Wedding">
+        <input type="text" id="eventName">
+        <div class="item-sub">Whatever you'd like this order labeled — a name, a company, anything you'll recognize later.</div>
       </div>
       <div class="grid2">
         <div class="field">
@@ -132,7 +133,8 @@
       </div>
       <div class="field">
         <label for="guests">Guest Count</label>
-        <input type="number" id="guests" min="1" placeholder="e.g. 75">
+        <input type="number" id="guests" min="1">
+        <div class="item-sub">Your total headcount for the event.</div>
       </div>
       <div class="field">
         <label>Service Method</label>
@@ -144,7 +146,8 @@
       </div>
       <div class="field" id="addressField" style="display:none;">
         <label for="address">Event Address</label>
-        <input type="text" id="address" placeholder="e.g. 1201 W Idaho St, Boise, ID">
+        <input type="text" id="address">
+        <div class="item-sub">Where we'll deliver or serve.</div>
       </div>
     </div>
   </div>
@@ -263,13 +266,13 @@ function row(key, name, sub, exactUnit, exactPlaceholder){
     <input type="checkbox" id="chk_${key}">
     <div style="flex:1;"><div class="item-name">${name}</div><div class="item-sub">${sub}</div></div>
     <div style="text-align:right;">
-      <input type="number" min="0" step="1" id="exact_${key}" placeholder="${exactPlaceholder}" style="width:56px;text-align:right;padding:6px 7px;font-size:13px;">
-      <div style="font-size:10px;color:var(--smoke);margin-top:2px;">exact ${exactUnit}</div>
+      <input type="number" min="0" step="1" id="exact_${key}" style="width:56px;text-align:right;padding:6px 7px;font-size:13px;">
+      <div style="font-size:10px;color:var(--smoke);margin-top:2px;">${exactUnit}</div>
     </div>
   </div>`;
 }
 menuEl.insertAdjacentHTML('beforeend', '<div class="group-label">Smoked Meats</div>');
-menuEl.insertAdjacentHTML('beforeend', '<div class="note" style="margin:0 0 10px;">Leave "exact" blank to auto-calculate from guest count, or enter a specific amount to order that regardless of headcount (e.g. 1 pan of mac and cheese). These four meats share one total lb budget for your guest count — enter an exact lb amount for one and the rest (left on auto) adjust to fill in the rest of that budget, so picking more meats doesn\'t just keep adding full portions on top of each other.</div>');
+menuEl.insertAdjacentHTML('beforeend', '<div class="note" style="margin:0 0 10px;">Leave the box blank to auto-calculate from guest count, or enter a specific amount to order that regardless of headcount (e.g. 1 pan of mac and cheese). These four meats share one total lb budget for your guest count — type a specific lb amount for one and the rest (left on auto) adjust to fill in the rest of that budget, so picking more meats doesn\'t just keep adding full portions on top of each other.</div>');
 MEATS.forEach(m=>menuEl.insertAdjacentHTML('beforeend', row(m.key, m.name, `$${m.price.toFixed(2)}/lb`, 'lb', 'e.g. 20')));
 menuEl.insertAdjacentHTML('beforeend', '<div class="group-label">Whole Turkey</div>');
 TURKEYS.forEach(t=>menuEl.insertAdjacentHTML('beforeend', row(t.key, t.name, `$${t.price.toFixed(2)} each`, 'whole', 'e.g. 2')));

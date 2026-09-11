@@ -337,7 +337,8 @@
     <div class="ticket-body">
       <div class="field">
         <label for="eventName">Event / Client Name</label>
-        <input type="text" id="eventName" placeholder="e.g. Miller Wedding">
+        <input type="text" id="eventName">
+        <div class="item-sub">Whatever you'd like this ticket labeled — a name, a company, anything you'll recognize later.</div>
       </div>
       <div class="grid2">
         <div class="field">
@@ -351,7 +352,8 @@
       </div>
       <div class="field">
         <label for="guests">Guest Count</label>
-        <input type="number" id="guests" min="1" placeholder="e.g. 75">
+        <input type="number" id="guests" min="1">
+        <div class="item-sub">Total headcount for the event.</div>
       </div>
       <div class="field">
         <label for="eventType">Event Type — how much guests tend to eat</label>
@@ -360,11 +362,11 @@
           <option value="social">Wedding / Funeral / Reception — lighter eating, more mingling</option>
           <option value="mealFocused">Company Party / Picnic / BBQ — heavier eating, meal is the main event</option>
         </select>
-        <div class="item-sub">Only affects quantities left on "auto" — anything you've typed an exact amount for is untouched. See the note by Food Cost Analysis for how these multipliers were set and how to adjust them as more events get logged.</div>
+        <div class="item-sub">Only affects quantities left on "auto" — anything you've typed a specific amount for is untouched. See the note by Food Cost Analysis for how these multipliers were set and how to adjust them as more events get logged.</div>
       </div>
       <div class="field">
         <label for="children">Children in Guest Count (ages 0-12)</label>
-        <input type="number" id="children" min="0" placeholder="e.g. 20">
+        <input type="number" id="children" min="0">
         <div class="item-sub">Optional — kids eat roughly half an adult's portion of meat and most sides, but count the same as adults for Mac &amp; Cheese (often their main course). Leave blank if you don't have a breakdown.</div>
       </div>
       <div class="field">
@@ -381,11 +383,13 @@
       </div>
       <div class="field" id="jobsiteAddressField" style="display:none;">
         <label for="jobsiteAddress">Jobsite Address</label>
-        <input type="text" id="jobsiteAddress" placeholder="e.g. 1201 W Idaho St, Boise, ID">
+        <input type="text" id="jobsiteAddress">
+        <div class="item-sub">Where we'll deliver or serve.</div>
       </div>
       <div class="field">
         <label for="clientContact">Client Contact / Billing Address (optional)</label>
-        <input type="text" id="clientContact" placeholder="e.g. Jane Miller, jane@email.com">
+        <input type="text" id="clientContact">
+        <div class="item-sub">Phone, email, or mailing address for this client — for your own reference.</div>
       </div>
     </div>
   </div>
@@ -453,11 +457,13 @@
     <div class="ticket-body">
       <div class="field">
         <label for="plateBuffer">Plate/Hold Buffer Before Serving (min)</label>
-        <input type="number" id="plateBuffer" min="0" placeholder="e.g. 30">
+        <input type="number" id="plateBuffer" min="0">
+        <div class="item-sub">Defaults to 30 minutes if left blank.</div>
       </div>
       <div class="field">
         <label for="setupBuffer">Setup Time At Jobsite Before Serving (min)</label>
-        <input type="number" id="setupBuffer" min="0" placeholder="e.g. 45">
+        <input type="number" id="setupBuffer" min="0">
+        <div class="item-sub">Defaults to 45 minutes if left blank.</div>
       </div>
       <div class="note">Prep and smoker start times are calculated backward from your serve time. If you enter a jobsite address, departure time is calculated backward using setup time plus drive time.</div>
     </div>
@@ -1006,7 +1012,7 @@ function refreshPlaceholder(key){
 /* ---------- build input rows ---------- */
 
 /* Unified row builder: every item can be ordered "By Guests" (rate × guest count)
-   or "Exact Qty" (a specific amount typed in directly), independent of guest count. */
+   or "Set Amount" (a specific amount typed in directly), independent of guest count. */
 const ITEM_UI = {};
 const itemModes = {};
 
@@ -1020,7 +1026,7 @@ function buildRow(id, name, sub, guestUnit, guestDefault, exactUnit, exactPlaceh
       <div class="mode-qty">
         <div class="mode-toggle">
           <button type="button" class="mode-btn active" data-key="${id}" data-mode="guests" onclick="setMode('${id}','guests')">By Guests</button>
-          <button type="button" class="mode-btn" data-key="${id}" data-mode="exact" onclick="setMode('${id}','exact')">Exact</button>
+          <button type="button" class="mode-btn" data-key="${id}" data-mode="exact" onclick="setMode('${id}','exact')">Set Amount</button>
         </div>
         <div class="qty-input">
           <input type="number" step="0.01" id="rate_${id}" placeholder="${showGuestInput ? guestDefault : ''}" style="${showGuestInput?'':'display:none;'}" oninput="enforceWholeNumber('${id}')">
@@ -1060,7 +1066,7 @@ function setMode(key, mode){
   } else {
     input.step = '1';
     input.style.display='';
-    input.placeholder = cfg.exactPlaceholder;
+    input.placeholder = '';
     unit.textContent = cfg.exactUnit;
   }
 }
@@ -1188,7 +1194,7 @@ function doRunCalc(){
   if(checkedKeys.length===0){ showFormError('Check at least one menu item before building the ticket.'); return; }
   const needsGuestCount = checkedKeys.some(k=>itemModes[k]==='guests');
   if(needsGuestCount && guests===null){
-    showFormError('One or more items are set to "By Guests" — enter a guest count, or switch those items to "Exact".');
+    showFormError('One or more items are set to "By Guests" — enter a guest count, or switch those items to "Set Amount".');
     return;
   }
 
@@ -3058,7 +3064,7 @@ function receiptRowHtml(row, i){
       <div class="grid2" style="align-items:end;">
         <div class="field">
           <label>Item name — type to fix a misread, or search the catalog</label>
-          <input type="text" id="rcpt_text_${i}" value="${escapeAttr(row.text)}" onchange="onReceiptTextChange(${i})" placeholder="e.g. Buttermilk, Nitrile Gloves">
+          <input type="text" id="rcpt_text_${i}" value="${escapeAttr(row.text)}" onchange="onReceiptTextChange(${i})">
         </div>
         <button type="button" class="secondary" style="width:auto;padding:8px 14px;font-size:11px;" onclick="removeReceiptRow(${i})">Remove item</button>
       </div>
@@ -3066,7 +3072,7 @@ function receiptRowHtml(row, i){
       <div class="grid2">
         <div class="field">
           <label>Quantity purchased</label>
-          <input type="number" step="0.01" id="rcpt_qty_${i}" value="${qtyNum}" oninput="updateReceiptRowTotal(${i})" onchange="onReceiptFieldChange(${i})" placeholder="e.g. 2, 21.1">
+          <input type="number" step="0.01" id="rcpt_qty_${i}" value="${qtyNum}" oninput="updateReceiptRowTotal(${i})" onchange="onReceiptFieldChange(${i})">
         </div>
         <div class="field">
           <label>Price paid (per unit/lb)</label>
@@ -3075,12 +3081,12 @@ function receiptRowHtml(row, i){
       </div>
       <div class="field">
         <label>Subtotal for this line, before discount (optional — if the receipt shows it, this is more precise than a rounded printed weight)</label>
-        <input type="number" step="0.01" min="0" id="rcpt_subtotal_${i}" value="${isFinite(row.subtotal) && row.subtotal ? row.subtotal.toFixed(2) : ''}" oninput="updateReceiptRowFromSubtotal(${i})" onchange="onReceiptFieldChange(${i})" placeholder="e.g. 117.61">
+        <input type="number" step="0.01" min="0" id="rcpt_subtotal_${i}" value="${isFinite(row.subtotal) && row.subtotal ? row.subtotal.toFixed(2) : ''}" oninput="updateReceiptRowFromSubtotal(${i})" onchange="onReceiptFieldChange(${i})">
         <div class="item-sub">If you fill this in, Quantity above is recalculated from Subtotal ÷ Price so it matches what the register actually charged, not just what's printed as the weight.</div>
       </div>
       <div class="field">
         <label>Discount on this line (if the store knocked off a lump sum — $ off the total, not per unit)</label>
-        <input type="number" step="0.01" min="0" id="rcpt_discount_${i}" value="${discountNum ? discountNum.toFixed(2) : ''}" oninput="updateReceiptRowTotal(${i})" onchange="onReceiptFieldChange(${i})" placeholder="e.g. 5.00">
+        <input type="number" step="0.01" min="0" id="rcpt_discount_${i}" value="${discountNum ? discountNum.toFixed(2) : ''}" oninput="updateReceiptRowTotal(${i})" onchange="onReceiptFieldChange(${i})">
       </div>
       <div class="item-sub" id="rcpt_total_line_${i}" style="margin:-6px 0 10px;">${lineTotalText}</div>
       <div class="field">
@@ -3089,16 +3095,18 @@ function receiptRowHtml(row, i){
       </div>
       <div class="field" id="rcpt_newname_field_${i}" style="display:${row.matchValue==='sup:new' ? '' : 'none'};">
         <label>New supply name</label>
-        <input type="text" id="rcpt_newname_${i}" value="${escapeAttr(row.newName)}" onchange="onReceiptFieldChange(${i})" placeholder="e.g. Nitrile Gloves (box of 100), Propane Refill">
+        <input type="text" id="rcpt_newname_${i}" value="${escapeAttr(row.newName)}" onchange="onReceiptFieldChange(${i})">
+        <div class="item-sub">Include the pack size if there is one — e.g. "box of 100" or a case count.</div>
       </div>
       <div class="grid2">
         <div class="field">
           <label>Package size</label>
-          <input type="number" step="0.01" id="rcpt_size_${i}" value="${row.size}" onchange="onReceiptFieldChange(${i})" placeholder="e.g. 5">
+          <input type="number" step="0.01" id="rcpt_size_${i}" value="${row.size}" onchange="onReceiptFieldChange(${i})">
         </div>
         <div class="field">
           <label>Unit</label>
-          <input type="text" id="rcpt_unit_${i}" value="${escapeAttr(row.unit)}" onchange="onReceiptFieldChange(${i})" placeholder="e.g. lb, oz, ct, ea">
+          <input type="text" id="rcpt_unit_${i}" value="${escapeAttr(row.unit)}" onchange="onReceiptFieldChange(${i})">
+          <div class="item-sub">Common units: lb, oz, ct, ea.</div>
         </div>
       </div>
       <label style="display:flex;align-items:center;gap:6px;font-weight:400;">
@@ -3158,11 +3166,11 @@ function renderReceiptReview(parsed, photoBlob){
     <div class="group-label">Review Before Saving</div>
     <div class="group-note">Nothing is applied until you hit Confirm — edit, retype, add, or remove anything OCR got wrong.</div>
     <div class="grid2">
-      <div class="field"><label>Vendor</label><input type="text" id="rcpt_vendor" value="${escapeAttr(parsed.vendorGuess||'')}" placeholder="e.g. Kroger, Walmart, US Foods Chef'Store"></div>
+      <div class="field"><label>Vendor</label><input type="text" id="rcpt_vendor" value="${escapeAttr(parsed.vendorGuess||'')}"><div class="item-sub">e.g. Kroger, Walmart, US Foods Chef'Store.</div></div>
       <div class="field"><label>Date</label><input type="date" id="rcpt_date" value="${today}"></div>
     </div>
     <div class="grid2">
-      <div class="field"><label>Total paid (this receipt)</label><input type="number" step="0.01" id="rcpt_total" value="${parsed.totalGuess!=null ? parsed.totalGuess.toFixed(2) : ''}" placeholder="e.g. 42.17"></div>
+      <div class="field"><label>Total paid (this receipt)</label><input type="number" step="0.01" id="rcpt_total" value="${parsed.totalGuess!=null ? parsed.totalGuess.toFixed(2) : ''}"></div>
       <div class="field"><label>Category (for Quicken)</label>
         <select id="rcpt_category">
           <option value="Ingredients">Ingredients</option>
